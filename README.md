@@ -91,6 +91,15 @@ Set `nyx.initial_z` to match `transfer_redshift` in your CAMB parameter file.
 The axion mass `nyx.m_tt` is in units of 10⁻²² eV (so `m_tt = 0.1` corresponds 
 to m = 10⁻²³ eV). Make sure this is consistent across the board as well.
 
+### Post-Run Analysis
+
+Lyman-α forest observables can be computed from AxioNyx outputs using 
+the FGPA (Fluctuating Gunn-Peterson Approximation) pipeline developed 
+alongside this codebase. The analysis module is maintained as a separate 
+repository:
+
+**[BoxFGPA](https://github.com/Sifyrena/BoxFGPA)** — approximate FGPA 
+model for Lyman-α forest spectra from cosmological simulation outputs.
 
 # About AxioNyx 1
 axionyx is a modification of the [Nyx] (https://github.com/AMReX-Astro/Nyx.git) code for dealing with Fuzzy Dark Matter. The AxioNyx paper https://arxiv.org/abs/2007.08256 was produced using the mixed_dm branch.
