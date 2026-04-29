@@ -1,4 +1,18 @@
 
 CEXE_sources += ParticleDerive.cpp
-FEXE_headers += Derive_F.H
-f90EXE_sources += Derive_3d.f90
+CEXE_headers += ParticleDerive.H
+ifneq ($(NO_HYDRO), TRUE)
+CEXE_headers += Derive.H
+CEXE_sources += Derive.cpp
+endif
+CEXE_sources += Derive_forcing.cpp
+
+ifeq ($(USE_FDM), TRUE)
+CEXE_headers += FDMDerive.H
+CEXE_sources += FDMDerive.cpp
+endif
+
+ifeq ($(USE_AXCOMPLEX), TRUE)
+CEXE_headers += AxComplexDerive.H
+CEXE_sources += AxComplexDerive.cpp
+endif

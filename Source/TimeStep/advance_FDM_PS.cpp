@@ -1,0 +1,777 @@
+// This version makes use of Amrex FFT
+
+#ifdef FDM
+#ifdef BL_USE_MPI
+#include <AMReX_BLProfiler.H>
+#include <Nyx.H>
+#include <AMReX_MultiFab.H>
+#ifdef GRAVITY
+#include <Gravity.H>
+#endif
+#include <Distribution.H>
+#include <AlignedAllocator.h>
+#include <Dfft.H>
+
+#include <string>
+
+//#include <AMReX_FFT.H>
+
+#define ALIGN 16
+
+using namespace amrex;
+
+void drift(hacc::Dfft &dfft, MultiFab &Ax_new, int const gridsize, Real const dt, Real const h, Real const a_half,
+           Real const hbaroverm, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *a, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *b);
+
+//#ifdef GRAVITY
+void fdm_timestep(hacc::Dfft &dfft, MultiFab &Ax_new, MultiFab &phi, Gravity *gravity, Geometry &geom,
+                  int const level, int const gridsize, Real const h, Real const dt_c,
+                  Real const a_c, Real const dt_d, Real const a_d, Real const a_new,
+                  Real const hbaroverm, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *a, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *b);
+//#else
+void fdm_timestep_NG(hacc::Dfft &dfft, MultiFab &Ax_new, MultiFab &phi, Geometry &geom,
+                  int const level, int const gridsize, Real const h, Real const dt_c,
+                  Real const a_c, Real const dt_d, Real const a_d, Real const a_new,
+                  Real const hbaroverm, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *a, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *b);
+//#endif
+
+void Nyx::advance_FDM_PS(amrex::Real time,
+                         amrex::Real dt,
+                         amrex::Real a_old,
+                         amrex::Real a_new)
+{
+
+  BL_PROFILE("Nyx::advance_FDM_PS_NEW()");
+
+  // *****************************************
+  // define constants
+  // *****************************************
+  const Real h = geom.CellSize(0);
+
+  Real w0, w1, w2, w3;
+  Real c1, c2, c3, c4, c5, c6, c7, c8;
+  Real d1, d2, d3, d4, d5, d6, d7, d8;
+  Real a_c1, a_c2, a_c3, a_c4, a_c5, a_c6, a_c7, a_c8;
+  Real a_d1, a_d2, a_d3, a_d4, a_d5, a_d6, a_d7, a_d8;
+  Real a_time;
+
+  //******************************************
+  // define weights for time steps (see Levkov et. al. 2018)
+  //******************************************
+
+  if (order == 6)
+  {
+    w1 = -1.17767998417887;
+    w2 = 0.235573213359359;
+    w3 = 0.784513610477560;
+    w0 = 1.0 - 2.0 * (w1 + w2 + w3);
+
+    c1 = w3 / 2.0 * dt;
+    c2 = (w2 + w3) / 2.0 * dt;
+    c3 = (w1 + w2) / 2.0 * dt;
+    c4 = (w0 + w1) / 2.0 * dt;
+    c5 = (w0 + w1) / 2.0 * dt;
+    c6 = (w1 + w2) / 2.0 * dt;
+    c7 = (w2 + w3) / 2.0 * dt;
+    c8 = w3 / 2.0 * dt;
+
+    d1 = w3 * dt;
+    d2 = w2 * dt;
+    d3 = w1 * dt;
+    d4 = w0 * dt;
+    d5 = w1 * dt;
+    d6 = w2 * dt;
+    d7 = w3 * dt;
+    d8 = 0.0;
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * c1;
+    a_c1 = get_comoving_a(a_time);
+    a_time += 0.5 * (c1 + c2);
+    a_c2 = get_comoving_a(a_time);
+    a_time += 0.5 * (c2 + c3);
+    a_c3 = get_comoving_a(a_time);
+    a_time += 0.5 * (c3 + c4);
+    a_c4 = get_comoving_a(a_time);
+    a_time += 0.5 * (c4 + c5);
+    a_c5 = get_comoving_a(a_time);
+    a_time += 0.5 * (c5 + c6);
+    a_c6 = get_comoving_a(a_time);
+    a_time += 0.5 * (c6 + c7);
+    a_c7 = get_comoving_a(a_time);
+    a_time += 0.5 * (c7 + c8);
+    a_c8 = get_comoving_a(a_time);
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * d1;
+    a_d1 = get_comoving_a(a_time);
+    a_time += 0.5 * (d1 + d2);
+    a_d2 = get_comoving_a(a_time);
+    a_time += 0.5 * (d2 + d3);
+    a_d3 = get_comoving_a(a_time);
+    a_time += 0.5 * (d3 + d4);
+    a_d4 = get_comoving_a(a_time);
+    a_time += 0.5 * (d4 + d5);
+    a_d5 = get_comoving_a(a_time);
+    a_time += 0.5 * (d5 + d6);
+    a_d6 = get_comoving_a(a_time);
+    a_time += 0.5 * (d6 + d7);
+    a_d7 = get_comoving_a(a_time);
+    a_time += 0.5 * (d7 + d8);
+    a_d8 = get_comoving_a(a_time);
+  }
+  else if (order == 2)
+  {
+
+    c1 = 0.5 * dt;
+    c2 = 0.5 * dt;
+
+    d1 = dt;
+    d2 = 0.0;
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * c1;
+    a_c1 = get_comoving_a(a_time);
+    a_time += 0.5 * (c1 + c2);
+    a_c2 = get_comoving_a(a_time);
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * d1;
+    a_d1 = get_comoving_a(a_time);
+    a_time += 0.5 * (d1 + d2);
+    a_d2 = get_comoving_a(a_time);
+  }
+  else
+    amrex::Error("Order of algorithm is not implemented! Use 2 or 6 Please!");
+
+  // *****************************************
+  // Get Axion State
+  // *****************************************
+  MultiFab &Ax_old = get_old_data(Axion_Type);
+  MultiFab &Ax_new = get_new_data(Axion_Type);
+  const BoxArray &ba = Ax_old.boxArray();
+  const DistributionMapping &dm = Ax_old.DistributionMap();
+
+  if (Ax_old.contains_nan(0, Ax_old.nComp(), 0))
+  {
+    for (int i = 0; i < Ax_old.nComp(); i++)
+    {
+      if (Ax_old.contains_nan(i, 1, 0))
+      {
+        std::cout << "Testing component i for NaNs: " << i << std::endl;
+        amrex::Abort("Ax_old has NaNs in this component::advance_FDM_FFT()");
+      }
+    }
+  }
+
+  // *****************************************
+  // Define Potential
+  // *****************************************
+  MultiFab phi(Ax_new.boxArray(), Ax_new.DistributionMap(), 1, 1); // Ax_new.nGrow()
+  phi.setVal(0.0);
+#ifdef GRAVITY
+  MultiFab &grav_phi = get_old_data(PhiGrav_Type);
+  // MultiFab::Add(phi, grav_phi, 0, 0, 1, 1);
+  // phi.MultiFab::ParallelAdd(grav_phi, 0, 0, 1, grav_phi.nGrow(), phi.nGrow(), geom.periodicity());
+  phi.ParallelCopy(grav_phi, 0, 0, 1, 1, 1, parent->Geom(level).periodicity());
+#endif
+
+  // *****************************************
+  // We assume that all grids have the same size hence
+  // we have the same nx,ny,nz on all ranks
+  // *****************************************
+  int nx = ba[0].size()[0];
+  int ny = ba[0].size()[1];
+  int nz = ba[0].size()[2];
+  int gridsize = nx * ny * nz;
+
+  Box domain(geom.Domain());
+
+  int nbx = domain.length(0) / nx;
+  int nby = domain.length(1) / ny;
+  int nbz = domain.length(2) / nz;
+  int nboxes = nbx * nby * nbz;
+
+  if (nboxes != ba.size())
+    amrex::Error("NBOXES NOT COMPUTED CORRECTLY");
+
+  // *****************************************
+  // This unfortunately seems neccessary (cf. amrex/Src/Extern/SWFFT/README)
+  // *****************************************
+  if (ParallelDescriptor::NProcs() < nboxes)
+    amrex::Error("Number of MPI ranks has to be larger or equal to the number of root level grids!");
+
+  Vector<int> rank_mapping;
+  rank_mapping.resize(nboxes);
+
+  for (int ib = 0; ib < nboxes; ++ib)
+  {
+    int i = ba[ib].smallEnd(0) / nx;
+    int j = ba[ib].smallEnd(1) / ny;
+    int k = ba[ib].smallEnd(2) / nz;
+    int local_index = i * nbx * nby + j * nbx + k;
+
+    rank_mapping[local_index] = dm[ib];
+
+    if (verbose)
+      amrex::Print() << "LOADING RANK NUMBER " << dm[ib] << " FOR GRID NUMBER " << ib
+                     << " WHICH IS LOCAL NUMBER " << local_index << std::endl;
+  }
+  // *****************************************
+  // Assume for now that nx = ny = nz
+  // *****************************************
+  int Ndims[3] = {nbz, nby, nbx};
+  int n[3] = {domain.length(2), domain.length(1), domain.length(0)};
+  hacc::Distribution d(MPI_COMM_WORLD, n, Ndims, &rank_mapping[0]);
+  hacc::Dfft dfft(d);
+
+  //  *******************************************
+  //  prepare fft
+  //  *******************************************
+
+  std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> a;
+  std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> b;
+  a.resize(gridsize);
+  b.resize(gridsize);
+  dfft.makePlans(&a[0], &b[0], &a[0], &b[0]);
+
+  for (MFIter mfi(Ax_old, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = Ax_old.array(mfi);
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+    for (size_t k = 0; k < (size_t)w.z; k++)
+    {
+      for (size_t j = 0; j < (size_t)w.y; j++)
+      {
+        AMREX_PRAGMA_SIMD
+        for (size_t i = 0; i < (size_t)w.x; i++)
+        {
+          size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * i + (size_t)w.z * j + k;
+          complex_t temp(arr(i + lo.x, j + lo.y, k + lo.z, Nyx::AxRe), arr(i + lo.x, j + lo.y, k + lo.z, Nyx::AxIm));
+          a[local_indx_threaded] = temp;
+        }
+      }
+    }
+  }
+
+  //  *******************************************
+  //  higher order time steps
+  //  *******************************************
+  if (order == 6)
+  {
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c1, a_c1, d1, a_d1, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c2, a_c2, d2, a_d2, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c3, a_c3, d3, a_d3, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c4, a_c4, d4, a_d4, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c5, a_c5, d5, a_d5, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c6, a_c6, d6, a_d6, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c7, a_c7, d7, a_d7, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c8, a_c8, d8, a_d8, a_new, hbaroverm, &a, &b);
+  }
+  else if (order == 2)
+  {
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c1, a_c1, d1, a_d1, a_new, hbaroverm, &a, &b);
+    fdm_timestep(dfft, Ax_new, phi, gravity, geom, level, gridsize, h, c2, a_c2, d2, a_d2, a_new, hbaroverm, &a, &b);
+  }
+  //  *******************************************
+  //  copy everything back to Axion_State
+  //  *******************************************
+
+  for (MFIter mfi(Ax_new, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = Ax_new[mfi].array();
+    auto const axold = Ax_old[mfi].array();
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+
+    amrex::ParallelFor(bx,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k)
+                       {
+                         size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * (i - lo.x) + (size_t)w.z * (j - lo.y) + (k - lo.z);
+                         complex_t temp = a[local_indx_threaded];
+                         arr(i, j, k, Nyx::AxRe) = std::real(temp);
+                         arr(i, j, k, Nyx::AxIm) = std::imag(temp);
+                         arr(i, j, k, Nyx::AxDens) = std::real(temp) * std::real(temp) + std::imag(temp) * std::imag(temp);
+                         arr(i, j, k, Nyx::AxPhas) = std::arg(temp);
+                         int N = int((axold(i, j, k, Nyx::AxPhas) - arr(i, j, k, Nyx::AxPhas)) / (2.0 * M_PI));
+                         if (std::abs(axold(i, j, k, Nyx::AxPhas) - arr(i, j, k, Nyx::AxPhas) - 2.0 * M_PI * N) < M_PI)
+                         {
+                           arr(i, j, k, Nyx::AxPhas) += 2 * M_PI * N;
+                         }
+                         else
+                         {
+                           arr(i, j, k, Nyx::AxPhas) += 2 * M_PI * (N + int((0 < axold(i, j, k, Nyx::AxPhas)) - (axold(i, j, k, Nyx::AxPhas) < 0)));
+                         }
+                       });
+  }
+  Ax_new.FillBoundary(geom.periodicity());
+
+  if (Ax_new.contains_nan(0, Ax_new.nComp(), 0))
+  {
+    for (int i = 0; i < Ax_new.nComp(); i++)
+    {
+      if (Ax_new.contains_nan(i, 1, 0))
+      {
+        std::cout << "Testing component i for NaNs: " << i << std::endl;
+        amrex::Abort("Ax_new has NaNs in this component::advance_FDM_FFT()");
+      }
+    }
+  }
+}
+
+void Nyx::advance_FDM_PS_NG(amrex::Real time,
+                         amrex::Real dt,
+                         amrex::Real a_old,
+                         amrex::Real a_new)
+{
+
+  BL_PROFILE("Nyx::advance_FDM_PS_NEW()");
+
+  // *****************************************
+  // define constants
+  // *****************************************
+  const Real h = geom.CellSize(0);
+
+  Real w0, w1, w2, w3;
+  Real c1, c2, c3, c4, c5, c6, c7, c8;
+  Real d1, d2, d3, d4, d5, d6, d7, d8;
+  Real a_c1, a_c2, a_c3, a_c4, a_c5, a_c6, a_c7, a_c8;
+  Real a_d1, a_d2, a_d3, a_d4, a_d5, a_d6, a_d7, a_d8;
+  Real a_time;
+
+  //******************************************
+  // define weights for time steps (see Levkov et. al. 2018)
+  //******************************************
+
+  if (order == 6)
+  {
+    w1 = -1.17767998417887;
+    w2 = 0.235573213359359;
+    w3 = 0.784513610477560;
+    w0 = 1.0 - 2.0 * (w1 + w2 + w3);
+
+    c1 = w3 / 2.0 * dt;
+    c2 = (w2 + w3) / 2.0 * dt;
+    c3 = (w1 + w2) / 2.0 * dt;
+    c4 = (w0 + w1) / 2.0 * dt;
+    c5 = (w0 + w1) / 2.0 * dt;
+    c6 = (w1 + w2) / 2.0 * dt;
+    c7 = (w2 + w3) / 2.0 * dt;
+    c8 = w3 / 2.0 * dt;
+
+    d1 = w3 * dt;
+    d2 = w2 * dt;
+    d3 = w1 * dt;
+    d4 = w0 * dt;
+    d5 = w1 * dt;
+    d6 = w2 * dt;
+    d7 = w3 * dt;
+    d8 = 0.0;
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * c1;
+    a_c1 = get_comoving_a(a_time);
+    a_time += 0.5 * (c1 + c2);
+    a_c2 = get_comoving_a(a_time);
+    a_time += 0.5 * (c2 + c3);
+    a_c3 = get_comoving_a(a_time);
+    a_time += 0.5 * (c3 + c4);
+    a_c4 = get_comoving_a(a_time);
+    a_time += 0.5 * (c4 + c5);
+    a_c5 = get_comoving_a(a_time);
+    a_time += 0.5 * (c5 + c6);
+    a_c6 = get_comoving_a(a_time);
+    a_time += 0.5 * (c6 + c7);
+    a_c7 = get_comoving_a(a_time);
+    a_time += 0.5 * (c7 + c8);
+    a_c8 = get_comoving_a(a_time);
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * d1;
+    a_d1 = get_comoving_a(a_time);
+    a_time += 0.5 * (d1 + d2);
+    a_d2 = get_comoving_a(a_time);
+    a_time += 0.5 * (d2 + d3);
+    a_d3 = get_comoving_a(a_time);
+    a_time += 0.5 * (d3 + d4);
+    a_d4 = get_comoving_a(a_time);
+    a_time += 0.5 * (d4 + d5);
+    a_d5 = get_comoving_a(a_time);
+    a_time += 0.5 * (d5 + d6);
+    a_d6 = get_comoving_a(a_time);
+    a_time += 0.5 * (d6 + d7);
+    a_d7 = get_comoving_a(a_time);
+    a_time += 0.5 * (d7 + d8);
+    a_d8 = get_comoving_a(a_time);
+  }
+  else if (order == 2)
+  {
+
+    c1 = 0.5 * dt;
+    c2 = 0.5 * dt;
+
+    d1 = dt;
+    d2 = 0.0;
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * c1;
+    a_c1 = get_comoving_a(a_time);
+    a_time += 0.5 * (c1 + c2);
+    a_c2 = get_comoving_a(a_time);
+
+    a_time = state[Axion_Type].prevTime() + 0.5 * d1;
+    a_d1 = get_comoving_a(a_time);
+    a_time += 0.5 * (d1 + d2);
+    a_d2 = get_comoving_a(a_time);
+  }
+  else
+    amrex::Error("Order of algorithm is not implemented! Use 2 or 6 Please!");
+
+  // *****************************************
+  // Get Axion State
+  // *****************************************
+  MultiFab &Ax_old = get_old_data(Axion_Type);
+  MultiFab &Ax_new = get_new_data(Axion_Type);
+  const BoxArray &ba = Ax_old.boxArray();
+  const DistributionMapping &dm = Ax_old.DistributionMap();
+
+  if (Ax_old.contains_nan(0, Ax_old.nComp(), 0))
+  {
+    for (int i = 0; i < Ax_old.nComp(); i++)
+    {
+      if (Ax_old.contains_nan(i, 1, 0))
+      {
+        std::cout << "Testing component i for NaNs: " << i << std::endl;
+        amrex::Abort("Ax_old has NaNs in this component::advance_FDM_FFT()");
+      }
+    }
+  }
+
+  // *****************************************
+  // Define Potential
+  // *****************************************
+  MultiFab phi(Ax_new.boxArray(), Ax_new.DistributionMap(), 1, 1); // Ax_new.nGrow()
+  phi.setVal(0.0);
+#ifdef GRAVITY
+  MultiFab &grav_phi = get_old_data(PhiGrav_Type);
+  // MultiFab::Add(phi, grav_phi, 0, 0, 1, 1);
+  // phi.MultiFab::ParallelAdd(grav_phi, 0, 0, 1, grav_phi.nGrow(), phi.nGrow(), geom.periodicity());
+  phi.ParallelCopy(grav_phi, 0, 0, 1, 1, 1, parent->Geom(level).periodicity());
+#endif
+
+  // *****************************************
+  // We assume that all grids have the same size hence
+  // we have the same nx,ny,nz on all ranks
+  // *****************************************
+  int nx = ba[0].size()[0];
+  int ny = ba[0].size()[1];
+  int nz = ba[0].size()[2];
+  int gridsize = nx * ny * nz;
+
+  Box domain(geom.Domain());
+
+  int nbx = domain.length(0) / nx;
+  int nby = domain.length(1) / ny;
+  int nbz = domain.length(2) / nz;
+  int nboxes = nbx * nby * nbz;
+
+  if (nboxes != ba.size())
+    amrex::Error("NBOXES NOT COMPUTED CORRECTLY");
+
+  // *****************************************
+  // This unfortunately seems neccessary (cf. amrex/Src/Extern/SWFFT/README)
+  // *****************************************
+  if (ParallelDescriptor::NProcs() < nboxes)
+    amrex::Error("Number of MPI ranks has to be larger or equal to the number of root level grids!");
+
+  Vector<int> rank_mapping;
+  rank_mapping.resize(nboxes);
+
+  for (int ib = 0; ib < nboxes; ++ib)
+  {
+    int i = ba[ib].smallEnd(0) / nx;
+    int j = ba[ib].smallEnd(1) / ny;
+    int k = ba[ib].smallEnd(2) / nz;
+    int local_index = i * nbx * nby + j * nbx + k;
+
+    rank_mapping[local_index] = dm[ib];
+
+    if (verbose)
+      amrex::Print() << "LOADING RANK NUMBER " << dm[ib] << " FOR GRID NUMBER " << ib
+                     << " WHICH IS LOCAL NUMBER " << local_index << std::endl;
+  }
+  // *****************************************
+  // Assume for now that nx = ny = nz
+  // *****************************************
+  int Ndims[3] = {nbz, nby, nbx};
+  int n[3] = {domain.length(2), domain.length(1), domain.length(0)};
+  hacc::Distribution d(MPI_COMM_WORLD, n, Ndims, &rank_mapping[0]);
+  hacc::Dfft dfft(d);
+
+  //  *******************************************
+  //  prepare fft
+  //  *******************************************
+
+  std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> a;
+  std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> b;
+  a.resize(gridsize);
+  b.resize(gridsize);
+  dfft.makePlans(&a[0], &b[0], &a[0], &b[0]);
+
+  for (MFIter mfi(Ax_old, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = Ax_old.array(mfi);
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+    for (size_t k = 0; k < (size_t)w.z; k++)
+    {
+      for (size_t j = 0; j < (size_t)w.y; j++)
+      {
+        AMREX_PRAGMA_SIMD
+        for (size_t i = 0; i < (size_t)w.x; i++)
+        {
+          size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * i + (size_t)w.z * j + k;
+          complex_t temp(arr(i + lo.x, j + lo.y, k + lo.z, Nyx::AxRe), arr(i + lo.x, j + lo.y, k + lo.z, Nyx::AxIm));
+          a[local_indx_threaded] = temp;
+        }
+      }
+    }
+  }
+
+  //  *******************************************
+  //  higher order time steps
+  //  *******************************************
+  if (order == 6)
+  {
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c1, a_c1, d1, a_d1, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c2, a_c2, d2, a_d2, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c3, a_c3, d3, a_d3, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c4, a_c4, d4, a_d4, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c5, a_c5, d5, a_d5, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c6, a_c6, d6, a_d6, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c7, a_c7, d7, a_d7, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c8, a_c8, d8, a_d8, a_new, hbaroverm, &a, &b);
+  }
+  else if (order == 2)
+  {
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c1, a_c1, d1, a_d1, a_new, hbaroverm, &a, &b);
+    fdm_timestep_NG(dfft, Ax_new, phi, geom, level, gridsize, h, c2, a_c2, d2, a_d2, a_new, hbaroverm, &a, &b);
+  }
+
+  //  *******************************************
+  //  copy everything back to Axion_State
+  //  *******************************************
+
+  for (MFIter mfi(Ax_new, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = Ax_new[mfi].array();
+    auto const axold = Ax_old[mfi].array();
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+
+    amrex::ParallelFor(bx,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k)
+                       {
+                         size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * (i - lo.x) + (size_t)w.z * (j - lo.y) + (k - lo.z);
+                         complex_t temp = a[local_indx_threaded];
+                         arr(i, j, k, Nyx::AxRe) = std::real(temp);
+                         arr(i, j, k, Nyx::AxIm) = std::imag(temp);
+                         arr(i, j, k, Nyx::AxDens) = std::real(temp) * std::real(temp) + std::imag(temp) * std::imag(temp);
+                         arr(i, j, k, Nyx::AxPhas) = std::arg(temp);
+                         int N = int((axold(i, j, k, Nyx::AxPhas) - arr(i, j, k, Nyx::AxPhas)) / (2.0 * M_PI));
+                         if (std::abs(axold(i, j, k, Nyx::AxPhas) - arr(i, j, k, Nyx::AxPhas) - 2.0 * M_PI * N) < M_PI)
+                         {
+                           arr(i, j, k, Nyx::AxPhas) += 2 * M_PI * N;
+                         }
+                         else
+                         {
+                           arr(i, j, k, Nyx::AxPhas) += 2 * M_PI * (N + int((0 < axold(i, j, k, Nyx::AxPhas)) - (axold(i, j, k, Nyx::AxPhas) < 0)));
+                         }
+                       });
+  }
+  Ax_new.FillBoundary(geom.periodicity());
+
+  if (Ax_new.contains_nan(0, Ax_new.nComp(), 0))
+  {
+    for (int i = 0; i < Ax_new.nComp(); i++)
+    {
+      if (Ax_new.contains_nan(i, 1, 0))
+      {
+        std::cout << "Testing component i for NaNs: " << i << std::endl;
+        amrex::Abort("Ax_new has NaNs in this component::advance_FDM_FFT()");
+      }
+    }
+  }
+}
+
+
+inline void fdm_timestep(hacc::Dfft &dfft, MultiFab &Ax_new, MultiFab &phi, Gravity *gravity, Geometry &geom,
+                         int const level, int const gridsize, Real const h, Real const dt_c,
+                         Real const a_c, Real const dt_d, Real const a_d, Real const a_new,
+                         Real const hbaroverm, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *a, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *b)
+{
+  //  *******************************************
+  //  drift by dt_c
+  //  *******************************************
+  drift(dfft, Ax_new, gridsize, dt_c, h, a_c, hbaroverm, a, b);
+  Ax_new.FillBoundary(geom.periodicity());
+
+  if (!dt_d)
+    return;
+
+  //  *******************************************
+  //  re-calculate potential
+  //  *******************************************
+  int fill_interior = 0;
+  int grav_n_grow = 1;
+  gravity->solve_for_new_phi(level, phi,
+                             gravity->get_grad_phi_curr(level),
+                             fill_interior, grav_n_grow);
+
+  //  *******************************************
+  //  kick by dt_d
+  //  *******************************************
+  const std::complex<double> imagi(0.0, 1.0);
+
+  for (MFIter mfi(phi, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = phi[mfi].array();
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+
+    amrex::ParallelFor(bx,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k)
+                       {
+                         size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * (i - lo.x) + (size_t)w.z * (j - lo.y) + (k - lo.z);
+                         (*a)[local_indx_threaded] = std::exp(imagi * arr(i, j, k) * a_new / a_d / hbaroverm * dt_d) * (*a)[local_indx_threaded];
+                       });
+  }
+}
+
+inline void fdm_timestep_NG(hacc::Dfft &dfft, MultiFab &Ax_new, MultiFab &phi, Geometry &geom,
+                         int const level, int const gridsize, Real const h, Real const dt_c,
+                         Real const a_c, Real const dt_d, Real const a_d, Real const a_new,
+                         Real const hbaroverm, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *a, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *b)
+{
+  //  *******************************************
+  //  drift by dt_c
+  //  *******************************************
+  drift(dfft, Ax_new, gridsize, dt_c, h, a_c, hbaroverm, a, b);
+  Ax_new.FillBoundary(geom.periodicity());
+
+  if (!dt_d)
+    return;
+
+  //  *******************************************
+  //  re-calculate potential
+  //  *******************************************
+
+  //  *******************************************
+  //  kick by dt_d
+  //  *******************************************
+  const std::complex<double> imagi(0.0, 1.0);
+
+  for (MFIter mfi(phi, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = phi[mfi].array();
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+
+    amrex::ParallelFor(bx,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k)
+                       {
+                         size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * (i - lo.x) + (size_t)w.z * (j - lo.y) + (k - lo.z);
+                         (*a)[local_indx_threaded] = std::exp(imagi * arr(i, j, k) * a_new / a_d / hbaroverm * dt_d) * (*a)[local_indx_threaded];
+                       });
+  }
+}
+
+inline void drift(hacc::Dfft &dfft, MultiFab &Ax_new,
+                  int const gridsize, Real const dt, Real const h, Real const a_half,
+                  Real const hbaroverm, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *a, std::vector<complex_t, hacc::AlignedAllocator<complex_t, ALIGN>> *b)
+{
+  if (!dt)
+    return;
+
+  const Real pi = 4 * std::atan(1.0);
+  const Real tpi = 2 * pi;
+  const Real hsq = h * h;
+  const std::complex<double> imagi(0.0, 1.0);
+  const int *self = dfft.self_kspace();
+  const int *local_ng = dfft.local_ng_kspace();
+  const int *global_ng = dfft.global_ng();
+  size_t local_indx = 0;
+
+  dfft.forward(&((*a)[0]));
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (size_t i = 0; i < (size_t)local_ng[0]; i++)
+  {
+    int global_i = local_ng[0] * self[0] + i;
+    if (global_i > global_ng[0] / 2.)
+    {
+      global_i = global_i - global_ng[0];
+    }
+
+    for (size_t j = 0; j < (size_t)local_ng[1]; j++)
+    {
+      int global_j = local_ng[1] * self[1] + j;
+      if (global_j > global_ng[1] / 2.)
+      {
+        global_j = global_j - global_ng[1];
+      }
+
+      AMREX_PRAGMA_SIMD
+      for (size_t k = 0; k < (size_t)local_ng[2]; k++)
+      {
+        int global_k = local_ng[2] * self[2] + k;
+        size_t local_indx_threaded = (size_t)local_ng[1] * (size_t)local_ng[2] * i + (size_t)local_ng[2] * j + k;
+        if (global_k > global_ng[2] / 2.)
+        {
+          global_k = global_k - global_ng[2];
+        }
+
+        double kx = tpi * double(global_i) / double(global_ng[0]);
+        double ky = tpi * double(global_j) / double(global_ng[1]);
+        double kz = tpi * double(global_k) / double(global_ng[2]);
+        double k2 = (kx * kx + ky * ky + kz * kz) / h / h;
+
+        (*a)[local_indx_threaded] *= std::exp(-imagi * hbaroverm * k2 / a_half / a_half / 2.0 * dt);
+        (*a)[local_indx_threaded] /= dfft.global_size();
+      }
+    }
+  }
+  dfft.backward(&((*a)[0]));
+
+  for (MFIter mfi(Ax_new, false); mfi.isValid(); ++mfi)
+  {
+    auto const arr = Ax_new[mfi].array();
+    const Box &bx = mfi.validbox();
+    const Dim3 lo = amrex::lbound(bx);
+    const Dim3 hi = amrex::ubound(bx);
+    const Dim3 w = {hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1};
+
+    amrex::ParallelFor(bx,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k)
+                       {
+                         size_t local_indx_threaded = (size_t)w.y * (size_t)w.z * (i - lo.x) + (size_t)w.z * (j - lo.y) + (k - lo.z);
+                         complex_t temp = (*a)[local_indx_threaded];
+                         arr(i, j, k, Nyx::AxDens) = std::real(temp) * real(temp) + std::imag(temp) * std::imag(temp);
+                       });
+  }
+}
+#endif
+#endif // FDM

@@ -1,0 +1,44 @@
+CEXE_sources += Nyx_advance.cpp
+CEXE_sources += Nyx_advance_particles.cpp
+
+ifneq ($(NO_HYDRO), TRUE)
+  CEXE_sources += Nyx_enforce_minimum_density.cpp
+  CEXE_sources += Nyx_time_center_sources.cpp
+  CEXE_sources += Nyx_update_state_with_sources.cpp
+
+  CEXE_headers += Nyx_enforce_minimum_density.H
+
+ifeq ($(USE_GRAV), TRUE)
+  CEXE_sources += Nyx_correct_gsrc.cpp
+endif
+ifneq ($(USE_AGN), TRUE)
+  CEXE_sources += Nyx_sources.cpp
+endif
+endif
+
+ifeq ($(USE_FDM), TRUE)
+  CEXE_sources += advance_FDM_FD.cpp
+  CEXE_sources += advance_FDM_PS.cpp
+  CEXE_headers += compute_laplace_operator.H
+  CEXE_sources += compute_laplace_operator.cpp
+  CEXE_sources += Axionyx_estimateTimeStep.cpp
+  CEXE_sources += Axionyx_advance.cpp
+endif
+
+ifeq ($(USE_AXCOMPLEX), TRUE)
+  CEXE_sources += advance_AxComplex_FD.cpp
+  CEXE_sources += advance_AxComplex_PS.cpp
+  CEXE_headers += compute_laplace_operator.H
+  CEXE_sources += compute_laplace_operator.cpp
+  CEXE_sources += Axionyx_estimateTimeStep.cpp
+  CEXE_sources += Axionyx_advance.cpp
+endif
+
+ifeq ($(USE_AXREAL), TRUE)
+  CEXE_sources += advance_AxReal_FD.cpp
+  CEXE_sources += advance_AxReal_PS.cpp
+  CEXE_headers += compute_laplace_operator.H
+  CEXE_sources += compute_laplace_operator.cpp
+  CEXE_sources += Axionyx_estimateTimeStep.cpp
+  CEXE_sources += Axionyx_advance.cpp
+endif

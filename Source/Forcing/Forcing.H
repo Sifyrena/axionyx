@@ -15,6 +15,8 @@ const spect_profile_type
   Band       = 2,
   Parabolic  = 3;
 
+constexpr int LENVEC = 4;  // assumed minimal vector length
+
 /**************************************************************************
  *
  *  STOCHASTIC FORCING CLASS
@@ -64,6 +66,9 @@ class StochasticForcing {
     amrex::Real *InjectionOdd[MAX_DIMENSION];  // random increments (sin modes)
     amrex::Real *SpectrumEven[MAX_DIMENSION];  // forcing cos modes
     amrex::Real *SpectrumOdd[MAX_DIMENSION];   // forcing sin modes
+    int         *wavevectors[MAX_DIMENSION];
+    amrex::Real *modes_even[MAX_DIMENSION];
+    amrex::Real *modes_odd[MAX_DIMENSION];
 
   public:
 
@@ -91,6 +96,15 @@ class StochasticForcing {
 // Calculate the instantaneous RMS force
 //
     amrex::Real rms(void);
+
+void integrate_state_force(
+  amrex::Box const& bx,
+  amrex::Array4<amrex::Real> const& state,
+  amrex::Array4<amrex::Real> const& diag_eos,
+  amrex::GeometryData const& geomdata,
+  amrex::Real a, amrex::Real half_dt,
+  amrex::Real small_eint, amrex::Real small_temp);
+
 //
 // Write/read forcing spectrum to/from output file
 //
@@ -191,28 +205,28 @@ inline int StochasticForcing::get_SpectralRank(void)
 inline int StochasticForcing::get_LeftBoundary(int dim)
 {
     switch (dim) {
-	case 1:
-	    return i1;
-	case 2:
-	    return j1;
-	case 3:
-	    return k1;
-	default:
-	    return 0;
+        case 1:
+            return i1;
+        case 2:
+            return j1;
+        case 3:
+            return k1;
+        default:
+            return 0;
     }
 }
 
 inline int StochasticForcing::get_RightBoundary(int dim)
 {
     switch (dim) {
-	case 1:
-	    return i2;
-	case 2:
-	    return j2;
-	case 3:
-	    return k2;
-	default:
-	    return 0;
+        case 1:
+            return i2;
+        case 2:
+            return j2;
+        case 3:
+            return k2;
+        default:
+            return 0;
     }
 }
 
@@ -249,38 +263,38 @@ inline amrex::Real StochasticForcing::get_IntgrTime(int dim)
 inline void StochasticForcing::copy_mask(int* target)
 {
     for (int n = 0; n < NumModes; n++) 
-	target[n] = mask[n];
+        target[n] = mask[n];
 }
 
 inline void StochasticForcing::copy_SpectrumOdd(int dim, amrex::Real* target)
 {
     for (int m = 0; m < NumNonZeroModes; m++) 
-	target[m] = SpectrumOdd[dim][m];
+        target[m] = SpectrumOdd[dim][m];
 }
 
 inline void StochasticForcing::copy_SpectrumEven(int dim, amrex::Real* target)
 {
     for (int m = 0; m < NumNonZeroModes; m++) 
-	target[m] = SpectrumEven[dim][m];
+        target[m] = SpectrumEven[dim][m];
 }
 
 inline void StochasticForcing::copy_ExpandedSpectrum(int dim, amrex::Real* target)
 {
     for (int n = 0, m = NumNonZeroModes-1; n < NumModes; n++) 
-	target[n] = mask[NumModes-1-n] ? SpectrumOdd[dim][m--] : 0.0;
+        target[n] = mask[NumModes-1-n] ? SpectrumOdd[dim][m--] : 0.0;
 
     target[NumModes] = 0.0;
 
     for (int n = NumModes+1, m = 0; n <= 2*NumModes; n++) 
-	target[n] = mask[n-NumModes-1] ? SpectrumEven[dim][m++] : 0.0;
+        target[n] = mask[n-NumModes-1] ? SpectrumEven[dim][m++] : 0.0;
 }
 
 inline void StochasticForcing::read_Spectrum(std::ifstream& input)
 {
     for (int dim = 0; dim < SpectralRank; dim++) {
-	for (int m = 0; m < NumNonZeroModes; m++) 
+        for (int m = 0; m < NumNonZeroModes; m++) 
             input >> SpectrumEven[dim][m];
-	for (int m = 0; m < NumNonZeroModes; m++) 
+        for (int m = 0; m < NumNonZeroModes; m++) 
             input >> SpectrumOdd[dim][m];
     }
 }
@@ -288,9 +302,9 @@ inline void StochasticForcing::read_Spectrum(std::ifstream& input)
 inline void StochasticForcing::write_Spectrum(std::ofstream& output)
 {
     for (int dim = 0; dim < SpectralRank; dim++) {
-	for (int m = 0; m < NumNonZeroModes; m++) 
+        for (int m = 0; m < NumNonZeroModes; m++) 
             output << SpectrumEven[dim][m] << '\n';
-	for (int m = 0; m < NumNonZeroModes; m++) 
+        for (int m = 0; m < NumNonZeroModes; m++) 
             output << SpectrumOdd[dim][m] << '\n';
     }
 }

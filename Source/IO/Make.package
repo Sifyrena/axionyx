@@ -1,0 +1,8 @@
+CEXE_sources += Nyx_output.cpp
+CEXE_headers += Nyx_output.H
+
+CEXE_sources += write_info.cpp
+
+ifeq ($(USE_FDM), TRUE)
+CEXE_sources += write_densmax.cpp
+endif

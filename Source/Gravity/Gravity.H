@@ -2,25 +2,24 @@
 #define _Gravity_H_
 
 #include <AMReX_AmrLevel.H>
-#include <AMReX_MacBndry.H>
+#include <AMReX_BndryData.H>
 #include <AMReX_FluxRegister.H>
 #include <AMReX_Particles.H>
 
 #include <AMReX_MLLinOp.H>
+#include <AMReX_MLPoisson.H>
 
 class Gravity {
 
 public:
 
-    Gravity(amrex::Amr* Parent, int _finest_level, amrex::BCRec* _phys_bc, int _Density);
+    Gravity(amrex::Amr* Parent, int _finest_level, amrex::BCRec* _phys_bc, int _Density_comp);
     virtual ~Gravity();
 
     void read_params();
 
     void install_level(int level, amrex::AmrLevel* level_data_to_install);
 
-    std::string get_gravity_type();
-    amrex::Real get_const_grav ();
     int get_no_sync();
     int get_no_composite();
 
@@ -36,6 +35,8 @@ public:
     // Moves curr phi data to prev and resets curr to 1.e50
     //
     void swap_time_levels(int level);
+
+    void setup_Poisson (int crse_level, int fine_level);
 
     amrex::Real solve_with_MLMG (int crse_level, int fine_level,
                                  const amrex::Vector<amrex::MultiFab*>& phi,
@@ -75,9 +76,6 @@ public:
                            amrex::Real time);
     void get_crse_phi(int level, amrex::MultiFab& phi_crse, amrex::Real time);
 
-    amrex::Real compute_level_average(int level, amrex::MultiFab* mf);
-    amrex::Real compute_multilevel_average(int level, amrex::MultiFab* mf, int flev = -1);
-
     //
     // Sets phi_flux registers to 0
     //
@@ -98,10 +96,6 @@ public:
     std::array<amrex::MLLinOp::BCType,AMREX_SPACEDIM> mlmg_hibc;
 
     void set_dirichlet_bcs(int level, amrex::MultiFab* phi);
-
-#ifdef CGRAV
-    void make_prescribed_grav(int level, amrex::Real time, amrex::MultiFab& grav, int addToExisting);
-#endif
 
 protected:
     //
@@ -128,34 +122,34 @@ protected:
     amrex::Vector<amrex::Real> level_solver_resnorm;
 
     int density;
-    int finest_level;
     int finest_level_allocated;
 
     amrex::BCRec* phys_bc;
+    std::unique_ptr<amrex::MLPoisson> mlpoisson;
 
     static int verbose;
+    static int mg_verbose;
+
+    static std::string mg_bottom_solver;
+
     static int no_sync;
     static int no_composite;
     static int dirichlet_bcs;
-    static int mlmg_max_fmg_iter;
+    static int mg_max_fmg_iter;
     static int mlmg_agglomeration;
     static int mlmg_consolidation;
     static amrex::Real mass_offset;
     static amrex::Real sl_tol;
     static amrex::Real ml_tol;
     static amrex::Real delta_tol;
-    static std::string gravity_type;
-
-    void fill_ec_grow(int level, const amrex::Vector<amrex::MultiFab*>& ecF,
-                      const amrex::Vector<amrex::MultiFab*>& ecC) const;
 
     void AddParticlesToRhs(int level, amrex::MultiFab& Rhs, int ngrow);
-  void AddGhostParticlesToRhs(int level, amrex::MultiFab& Rhs, int ngrow);
+    void AddGhostParticlesToRhs(int level, amrex::MultiFab& Rhs);
     void AddVirtualParticlesToRhs(int level, amrex::MultiFab& Rhs, int ngrow);
 
     void AddParticlesToRhs(int base_level, int finest_level, int ngrow, const amrex::Vector<amrex::MultiFab*>& Rhs_particles);
-  void AddGhostParticlesToRhs(int level, const amrex::Vector<amrex::MultiFab*>& Rhs_particles, int ngrow);
-    void AddVirtualParticlesToRhs(int finest_level, const amrex::Vector<amrex::MultiFab*>& Rhs_particles, int ngrow);
+    void AddGhostParticlesToRhs(int level, const amrex::Vector<amrex::MultiFab*>& Rhs_particles);
+    void AddVirtualParticlesToRhs(int finest_level, const amrex::Vector<amrex::MultiFab*>& Rhs_particles);
 
     void CorrectRhsUsingOffset(int level, amrex::MultiFab& Rhs);
 };
