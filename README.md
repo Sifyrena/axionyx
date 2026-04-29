@@ -1,4 +1,7 @@
+<center><img src="AxionyxLogo.png" alt="Logo" width="560" align = "center"/></center>
+
 # AxioNyx 1.1 Initial Release
+April 2026
 
 AxioNyx 1.1 is a fork of AxioNyx 1 maintained by Dr. Yourong Wang (FWPhys.com), building on the original codebase with the following enhancements:
 
@@ -17,9 +20,6 @@ AxioNyx 1.1 is a fork of AxioNyx 1 maintained by Dr. Yourong Wang (FWPhys.com), 
   - Active migration from SWFFT to native AMReX FFT, removing the MPI rank count constraint present in version 1.0.
 
 This initial release (Axionyx 1.1) accompanies Wang (2026), arXiv:2604.06038. The repository ships with one example configuration (`./Exec/MDM_NoHydro`) corresponding to the mixed FDM+CDM, dark-matter-only setup used in that paper.
-
-# AxioNyx 1.0
-axionyx is a modification of the [Nyx] (https://github.com/AMReX-Astro/Nyx.git) code for dealing with Fuzzy Dark Matter. The AxioNyx paper https://arxiv.org/abs/2007.08256 was produced using the mixed_dm branch.
 
 # Getting Started
 
@@ -90,6 +90,10 @@ cosmo.initDirName    = /path/to/ICs/C/
 Set `nyx.initial_z` to match `transfer_redshift` in your CAMB parameter file. 
 The axion mass `nyx.m_tt` is in units of 10⁻²² eV (so `m_tt = 0.1` corresponds 
 to m = 10⁻²³ eV). Make sure this is consistent across the board as well.
+
+
+# About AxioNyx 1.0
+axionyx is a modification of the [Nyx] (https://github.com/AMReX-Astro/Nyx.git) code for dealing with Fuzzy Dark Matter. The AxioNyx paper https://arxiv.org/abs/2007.08256 was produced using the mixed_dm branch.
 
 # License
 axionyx is released under the LBL's modified BSD license, see the [license.txt](license.txt) file for details.
