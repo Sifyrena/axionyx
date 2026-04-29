@@ -1,3 +1,3 @@
-#define AXIONYX_GIT_HASH   "7e09753"
+#define AXIONYX_GIT_HASH   "fce70fa"
 #define AXIONYX_GIT_BRANCH "mixed_dm"
 #define AXIONYX_GIT_DATE   "2026-04-29"
