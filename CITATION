@@ -1,4 +1,20 @@
-If you use Nyx, we appreciate you citing the main code paper:
+If you use (Axio)Nyx, we appreciate you citing the main code papers:
+
+@article{Axionyx1,
+  title = {Simulating mixed fuzzy and cold dark matter},
+  author = {Schwabe, Bodo and Gosenca, Mateja and Behrens, Christoph and Niemeyer, Jens C. and Easther, Richard},
+  journal = {Phys. Rev. D},
+  volume = {102},
+  issue = {8},
+  pages = {083518},
+  numpages = {10},
+  year = {2020},
+  month = {Oct},
+  publisher = {American Physical Society},
+  doi = {10.1103/PhysRevD.102.083518},
+  url = {https://link.aps.org/doi/10.1103/PhysRevD.102.083518}
+}
+
 
 @ARTICLE{Nyx,
    author = {{Almgren}, A.~S. and {Bell}, J.~B. and {Lijewski}, M.~J. and 
