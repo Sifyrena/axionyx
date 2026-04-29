@@ -92,8 +92,12 @@ The axion mass `nyx.m_tt` is in units of 10⁻²² eV (so `m_tt = 0.1` correspon
 to m = 10⁻²³ eV). Make sure this is consistent across the board as well.
 
 
-# About AxioNyx 1.0
+# About AxioNyx 1
 axionyx is a modification of the [Nyx] (https://github.com/AMReX-Astro/Nyx.git) code for dealing with Fuzzy Dark Matter. The AxioNyx paper https://arxiv.org/abs/2007.08256 was produced using the mixed_dm branch.
 
 # License
 axionyx is released under the LBL's modified BSD license, see the [license.txt](license.txt) file for details.
+
+# Acknowledgements
+
+Development of AxioNyx was supported in part by the Marsden Fund of the Royal Society of New Zealand. AxioNyx 1.1 was developed during the author's postdoctoral appointment at Georg-August-Universität Göttingen.
