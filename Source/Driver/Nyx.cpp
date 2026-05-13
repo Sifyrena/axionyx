@@ -3,6 +3,7 @@
 #include <vector>
 #include <iostream>
 #include <string>
+#include <filesystem>
 
 using std::cout;
 using std::cerr;
@@ -672,6 +673,32 @@ Nyx::read_params ()
     pp_nyx.query("mass_halo_min", mass_halo_min);
     pp_nyx.query("mass_seed", mass_seed);
 #endif
+
+    // Auto-create output directories so the user doesn't have to mkdir manually.
+    // Only the IO rank does the mkdir; all ranks then barrier-sync.
+    if (ParallelDescriptor::IOProcessor()) {
+        ParmParse pp_amr("amr");
+        auto mkdir_for = [](ParmParse& pp, const char* key) {
+            std::string path;
+            if (pp.query(key, path)) {
+                auto dir = std::filesystem::path(path).parent_path();
+                if (!dir.empty()) {
+                    std::error_code ec;
+                    std::filesystem::create_directories(dir, ec);
+                    if (ec)
+                        amrex::Warning(("Could not create directory " +
+                                        dir.string() + ": " + ec.message()).c_str());
+                    else
+                        amrex::Print() << "Output directory: " << dir << "\n";
+                }
+            }
+        };
+        mkdir_for(pp_amr, "data_log");
+        mkdir_for(pp_amr, "grid_log");
+        mkdir_for(pp_amr, "check_file");
+        mkdir_for(pp_amr, "plot_file");
+    }
+    ParallelDescriptor::Barrier();
 }
 
 #ifndef NO_HYDRO
@@ -1033,6 +1060,24 @@ Nyx::init (AmrLevel& old)
 #ifdef AXIONYX
     MultiFab&  Ax_new = get_new_data(Axion_Type);
     FillPatch(old, Ax_new, 0, cur_time, Axion_Type, 0, NUM_AX);
+#ifdef FDM
+    // Recompute AxDens and AxPhas from interpolated AxRe/AxIm for consistency
+    for (MFIter mfi(Ax_new, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+        const Box& bx = mfi.tilebox();
+        auto const& ax = Ax_new.array(mfi);
+        const int re = AxRe, im = AxIm, dens = AxDens, phas = AxPhas;
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            Real r = ax(i,j,k,re);
+            Real c = ax(i,j,k,im);
+            ax(i,j,k,dens) = r*r + c*c;
+            ax(i,j,k,phas) = std::atan2(c, r);
+        });
+    }
+#endif
+    // Fill old slot so swapTimeLevels in advance_axionyx doesn't expose
+    // uninitialized data as get_new_data() on the first substep after regrid.
+    state[Axion_Type].allocOldData();
+    MultiFab::Copy(get_old_data(Axion_Type), Ax_new, 0, 0, Ax_new.nComp(), 0);
 #endif
 
 #ifdef INFGRAV
@@ -1122,6 +1167,62 @@ Nyx::init ()
 #ifdef AXIONYX
     MultiFab&  Ax_new = get_new_data(Axion_Type);
     FillCoarsePatch(Ax_new, 0, cur_time, Axion_Type, 0, Ax_new.nComp());
+
+    // setTimeLevel() (called earlier in init()) allocates both old and new slots
+    // but leaves old uninitialized.  advance_axionyx then calls swapTimeLevels()
+    // over all levels — exposing that uninitialized old slot as get_new_data()
+    // on the first level-1 substep → NaN.  Fill old from new right here.
+    state[Axion_Type].allocOldData();   // no-op if already allocated; ensures old exists
+    MultiFab::Copy(get_old_data(Axion_Type), Ax_new, 0, 0, Ax_new.nComp(), 0);
+
+    // --- NaN diagnostic: find exactly which component is corrupt ----------
+    // contains_nan() is collective — all ranks must call it; only IO rank prints
+    {
+        const char* names[] = {"AxDens","AxRe","AxIm","AxPhas"};
+        for (int c = 0; c < Ax_new.nComp(); ++c) {
+            bool has_nan = Ax_new.contains_nan(c, 1, 0);  // collective
+            if (has_nan)
+                amrex::Print() << "  init(coarse): NaN in component " << c
+                               << " (" << names[c] << ") after FillCoarsePatch\n";
+        }
+    }
+    // ----------------------------------------------------------------------
+
+    // Bilinear interpolation of AxPhas across a 2π wrap, or AxDens across a
+    // steep gradient, can produce NaN/unphysical values on the new level.
+    // AxRe and AxIm interpolate cleanly as smooth fields, so recompute
+    // AxDens and AxPhas from them to restore consistency.
+#ifdef FDM
+    for (MFIter mfi(Ax_new, TilingIfNotGPU()); mfi.isValid(); ++mfi)
+    {
+        const Box& bx = mfi.tilebox();
+        auto const& ax = Ax_new.array(mfi);
+        const int re = AxRe, im = AxIm, dens = AxDens, phas = AxPhas;
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            Real r = ax(i,j,k,re);
+            Real c = ax(i,j,k,im);
+            ax(i,j,k,dens) = r*r + c*c;
+            ax(i,j,k,phas) = std::atan2(c, r);
+        });
+    }
+
+    // Confirm fix worked — also collective
+    {
+        const char* names[] = {"AxDens","AxRe","AxIm","AxPhas"};
+        bool any = false;
+        for (int c = 0; c < Ax_new.nComp(); ++c) {
+            bool has_nan = Ax_new.contains_nan(c, 1, 0);  // collective
+            if (has_nan) {
+                amrex::Print() << "  init(coarse): NaN PERSISTS in component " << c
+                               << " (" << names[c] << ") after recompute\n";
+                any = true;
+            }
+        }
+        if (!any)
+            amrex::Print() << "  init(coarse): FDM state clean after FillCoarsePatch+recompute\n";
+    }
+#endif
 #endif
 
     // We set dt to be large for this new level to avoid screwing up

@@ -39,14 +39,20 @@ Nyx::advance (Real time,
     } 
 #endif
     MultiFab& Ax_new = get_new_data(Axion_Type);
-    
-  if (Ax_new.contains_nan(0, 1, 0))                                                                                                                                                      
-    {                                                      
-		//std::cout << "Watchdog: New FDM State has NaNs." << std::endl;                                                                                                                        
-		amrex::Abort("Watchdog: New FDM State has NaNs.");                                                                                                                   
-    } //else {
-     // std::cout << "Watchdog: New FDM State looks OK in Main Advance Loop." << std::endl;
-    //}
+
+  {
+    const char* axnames[] = {"AxDens","AxRe","AxIm","AxPhas"};
+    bool found = false;
+    for (int c = 0; c < Ax_new.nComp(); ++c) {
+        if (Ax_new.contains_nan(c, 1, 0)) {
+            amrex::Print() << "Watchdog: NaN in Axion_Type component " << c
+                           << " (" << axnames[c] << ") at level " << level
+                           << " step " << nStep() << "\n";
+            found = true;
+        }
+    }
+    if (found) amrex::Abort("Watchdog: New FDM State has NaNs.");
+  }
 
 #ifndef NO_HYDRO
 return advance_hydro_axionyx(time, dt, iteration, ncycle);
