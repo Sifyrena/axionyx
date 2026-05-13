@@ -5,6 +5,7 @@
 #include <AMReX_BLFort.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Print.H>
+#include <AMReX_RealVect.H>
 #include <AMReX_TypeTraits.H>
 #include <AMReX_Arena.H>
 
@@ -44,6 +45,7 @@ namespace
 {
     int call_mpi_finalize = 0;
     int num_startparallel_called = 0;
+    MPI_Datatype mpi_type_realvect  = MPI_DATATYPE_NULL;
     MPI_Datatype mpi_type_intvect   = MPI_DATATYPE_NULL;
     MPI_Datatype mpi_type_indextype = MPI_DATATYPE_NULL;
     MPI_Datatype mpi_type_box       = MPI_DATATYPE_NULL;
@@ -54,10 +56,13 @@ namespace
 namespace amrex::ParallelDescriptor {
 
 #ifdef AMREX_USE_MPI
+    template <> MPI_Datatype Mpi_typemap<RealVect>::type();
     template <> MPI_Datatype Mpi_typemap<IntVect>::type();
     template <> MPI_Datatype Mpi_typemap<IndexType>::type();
     template <> MPI_Datatype Mpi_typemap<Box>::type();
 #endif
+
+    /// \cond DOXYGEN_IGNORE
 
 #ifdef AMREX_USE_GPU
     bool use_gpu_aware_mpi = false;
@@ -83,6 +88,8 @@ namespace amrex::ParallelDescriptor {
     int m_MinTag = 1000, m_MaxTag = -1;
 
     const int ioProcessor = 0;
+
+    /// \endcond
 
 #ifdef AMREX_PMI
     void PMI_Initialize()
@@ -377,11 +384,12 @@ StartParallel (int* argc, char*** argv, MPI_Comm a_mpi_comm)
     }
 
     // Create these types outside OMP parallel region
+    auto t0 = Mpi_typemap<RealVect>::type(); // NOLINT
     auto t1 = Mpi_typemap<IntVect>::type(); // NOLINT
     auto t2 = Mpi_typemap<IndexType>::type(); // NOLINT
     auto t3 = Mpi_typemap<Box>::type(); // NOLINT
     auto t4 = Mpi_typemap<ParallelDescriptor::lull_t>::type(); // NOLINT
-    amrex::ignore_unused(t1,t2,t3,t4);
+    amrex::ignore_unused(t0,t1,t2,t3,t4);
 
     // ---- find the maximum value for a tag
     int flag(0), *p;
@@ -411,6 +419,7 @@ EndParallel ()
 {
     --num_startparallel_called;
     if (num_startparallel_called == 0) {
+        BL_MPI_REQUIRE( MPI_Type_free(&mpi_type_realvect) );
         BL_MPI_REQUIRE( MPI_Type_free(&mpi_type_intvect) );
         BL_MPI_REQUIRE( MPI_Type_free(&mpi_type_indextype) );
         BL_MPI_REQUIRE( MPI_Type_free(&mpi_type_box) );
@@ -423,6 +432,7 @@ EndParallel ()
             BL_MPI_REQUIRE( MPI_Op_free(op) );
             *op = MPI_OP_NULL;
         }
+        mpi_type_realvect  = MPI_DATATYPE_NULL;
         mpi_type_intvect   = MPI_DATATYPE_NULL;
         mpi_type_indextype = MPI_DATATYPE_NULL;
         mpi_type_box       = MPI_DATATYPE_NULL;
@@ -1094,7 +1104,7 @@ Waitall (Vector<MPI_Request>& reqs, Vector<MPI_Status>& status)
     BL_MPI_REQUIRE( MPI_Waitall(reqs.size(),
                                 reqs.dataPtr(),
                                 status.dataPtr()) );
-    BL_COMM_PROFILE_WAITSOME(BLProfiler::Waitall, reqs, status.size(), status, false);
+    BL_COMM_PROFILE_WAITSOME(BLProfiler::Waitall, reqs, reqs.size(), status, false);
 }
 
 void
@@ -1123,7 +1133,7 @@ Waitsome (Vector<MPI_Request>& reqs, int& completed,
                                  &completed,
                                  indx.dataPtr(),
                                  status.dataPtr()));
-    BL_COMM_PROFILE_WAITSOME(BLProfiler::Waitsome, reqs, indx.size(), status, false);
+    BL_COMM_PROFILE_WAITSOME(BLProfiler::Waitsome, reqs, completed, status, false);
 }
 
 void
@@ -1377,6 +1387,29 @@ BL_FORT_PROC_DECL(BL_PD_ABORT,bl_pd_abort)()
 #endif
 
 #if defined(BL_USE_MPI) && !defined(BL_AMRPROF)
+template <> MPI_Datatype Mpi_typemap<RealVect>::type()
+{
+    static_assert(std::is_trivially_copyable_v<RealVect>, "RealVect must be trivially copyable");
+    static_assert(std::is_standard_layout_v<RealVect>, "RealVect must be standard layout");
+
+    if ( mpi_type_realvect == MPI_DATATYPE_NULL )
+    {
+        MPI_Datatype types[] = { Mpi_typemap<Real>::type() };
+        int blocklens[] = { AMREX_SPACEDIM };
+        MPI_Aint disp[] = { 0 };
+        BL_MPI_REQUIRE( MPI_Type_create_struct(1, blocklens, disp, types, &mpi_type_realvect) );
+        MPI_Aint lb, extent;
+        BL_MPI_REQUIRE( MPI_Type_get_extent(mpi_type_realvect, &lb, &extent) );
+        if (extent != sizeof(RealVect)) {
+            MPI_Datatype tmp = mpi_type_realvect;
+            BL_MPI_REQUIRE( MPI_Type_create_resized(tmp, 0, sizeof(RealVect), &mpi_type_realvect) );
+            BL_MPI_REQUIRE( MPI_Type_free(&tmp) );
+        }
+        BL_MPI_REQUIRE( MPI_Type_commit( &mpi_type_realvect ) );
+    }
+    return mpi_type_realvect;
+}
+
 template <> MPI_Datatype Mpi_typemap<IntVect>::type()
 {
     static_assert(std::is_trivially_copyable_v<IntVect>, "IntVect must be trivially copyable");
@@ -1462,7 +1495,7 @@ void
 ReadAndBcastFile (const std::string& filename, Vector<char>& charBuf,
                   bool bExitOnError, const MPI_Comm&comm)
 {
-    enum { IO_Buffer_Size = 262144 * 8 };
+    constexpr int IO_Buffer_Size = 262144 * 8;
 
 #ifdef BL_SETBUF_SIGNED_CHAR
     using Setbuf_Char_Type = signed char;
@@ -1476,7 +1509,8 @@ ReadAndBcastFile (const std::string& filename, Vector<char>& charBuf,
 
     std::ifstream iss;
 
-    if (ParallelDescriptor::IOProcessor()) {
+    const int root = ParallelDescriptor::IOProcessorNumber(comm);
+    if (ParallelDescriptor::IOProcessor(comm)) {
         iss.rdbuf()->pubsetbuf(io_buffer.dataPtr(), io_buffer.size());
         iss.open(filename.c_str(), std::ios::in);
         if ( ! iss.good()) {
@@ -1491,8 +1525,7 @@ ReadAndBcastFile (const std::string& filename, Vector<char>& charBuf,
           iss.seekg(0, std::ios::beg);
         }
     }
-    ParallelDescriptor::Bcast(&fileLength, 1,
-                              ParallelDescriptor::IOProcessorNumber(), comm);
+    ParallelDescriptor::Bcast(&fileLength, 1, root, comm);
 
     if(fileLength == -1) {
       return;
@@ -1501,12 +1534,11 @@ ReadAndBcastFile (const std::string& filename, Vector<char>& charBuf,
     fileLengthPadded = fileLength + 1;
 //    fileLengthPadded += fileLengthPadded % 8;
     charBuf.resize(fileLengthPadded);
-    if (ParallelDescriptor::IOProcessor()) {
+    if (ParallelDescriptor::IOProcessor(comm)) {
         iss.read(charBuf.dataPtr(), fileLength);
         iss.close();
     }
-    ParallelDescriptor::Bcast(charBuf.dataPtr(), fileLengthPadded,
-                              ParallelDescriptor::IOProcessorNumber(), comm);
+    ParallelDescriptor::Bcast(charBuf.dataPtr(), fileLengthPadded, root, comm);
     charBuf[fileLength] = '\0';
 }
 
@@ -1515,8 +1547,13 @@ Initialize ()
 {
 #if defined(AMREX_USE_CUDA)
 
-#if (defined(OMPI_HAVE_MPI_EXT_CUDA) && OMPI_HAVE_MPI_EXT_CUDA) || (defined(MPICH) && defined(MPIX_GPU_SUPPORT_CUDA))
+#if defined(OMPI_HAVE_MPI_EXT_CUDA) && OMPI_HAVE_MPI_EXT_CUDA
     use_gpu_aware_mpi = (bool) MPIX_Query_cuda_support();
+#elif defined(MPICH) && defined(MPIX_GPU_SUPPORT_CUDA)
+    int is_supported = 0;
+    if (MPIX_GPU_query_support(MPIX_GPU_SUPPORT_CUDA, &is_supported) == MPI_SUCCESS) {
+        use_gpu_aware_mpi = (bool) is_supported;
+    }
 #endif
 
 #elif defined(AMREX_USE_HIP)
@@ -1571,6 +1608,9 @@ StartTeams ()
     ParmParse pp("amrex.team");
     pp.query("size", team_size);
     pp.query("reduce", do_team_reduce);
+    if (team_size <= 0) {
+        amrex::Abort("amrex.team.size must be > 0");
+    }
     if (nprocs % team_size != 0) {
         amrex::Abort("Number of processes not divisible by team size");
     }
@@ -1588,11 +1628,11 @@ StartTeams ()
     {
         MPI_Group grp, team_grp, lead_grp;
         BL_MPI_REQUIRE( MPI_Comm_group(ParallelDescriptor::Communicator(), &grp) );
-        int team_ranks[team_size];
+        Vector<int> team_ranks(team_size);
         for (int i = 0; i < team_size; ++i) {
             team_ranks[i] = MyTeamLead() + i;
         }
-        BL_MPI_REQUIRE( MPI_Group_incl(grp, team_size, team_ranks, &team_grp) );
+        BL_MPI_REQUIRE( MPI_Group_incl(grp, team_size, team_ranks.data(), &team_grp) );
         BL_MPI_REQUIRE( MPI_Comm_create(ParallelDescriptor::Communicator(),
                                         team_grp, &m_Team.m_team_comm) );
 

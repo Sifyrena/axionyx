@@ -6,8 +6,14 @@
 #include <amrex_iparser.tab.h>
 
 #include <algorithm>
+#include <mutex>
+#include <stdexcept>
 
 namespace amrex {
+
+namespace {
+    std::mutex iparser_mutex;
+}
 
 IParser::IParser (std::string const& func_body)
 {
@@ -21,15 +27,19 @@ IParser::define (std::string const& func_body)
 
     if (!func_body.empty()) {
         m_data->m_expression = func_body;
-        m_data->m_expression.erase(std::remove(m_data->m_expression.begin(),
-                                               m_data->m_expression.end(),'\n'),
-                                   m_data->m_expression.end());
+        m_data->m_expression.erase(
+            std::remove_if(m_data->m_expression.begin(), m_data->m_expression.end(),
+                           [](char c) { return c == '\n' || c == '\r'; }),
+            m_data->m_expression.end());
         std::string f = m_data->m_expression + "\n";
 
+        std::scoped_lock iparser_lock(iparser_mutex);
         YY_BUFFER_STATE buffer = amrex_iparser_scan_string(f.c_str());
         try {
             amrex_iparserparse();
         } catch (const std::runtime_error& e) {
+            amrex_iparser_delete_buffer(buffer); // delete buffer allocated by bison
+            amrex_iparser_delete_ptrs();         // delete ptrs allocated by amrex
             throw std::runtime_error(std::string(e.what()) + " in IParser expression \""
                                      + m_data->m_expression + "\"");
         }
@@ -38,6 +48,7 @@ IParser::define (std::string const& func_body)
     }
 }
 
+/// \cond DOXYGEN_IGNORE
 IParser::Data::~Data ()
 {
     m_expression.clear();
@@ -53,6 +64,7 @@ IParser::Data::~Data ()
     if (m_device_executor) { The_Arena()->free(m_device_executor); }
 #endif
 }
+/// \endcond
 
 IParser::operator bool () const
 {
@@ -63,6 +75,9 @@ void
 IParser::setConstant (std::string const& name, long long c)
 {
     if (m_data && m_data->m_iparser) {
+        if (m_data->m_host_executor != nullptr) {
+            throw std::runtime_error("amrex::IParser::setConstant: cannot modify constants after compile()");
+        }
         iparser_setconst(m_data->m_iparser, name.c_str(), c);
     }
 }
@@ -70,6 +85,10 @@ IParser::setConstant (std::string const& name, long long c)
 void
 IParser::registerVariables (Vector<std::string> const& vars)
 {
+    if (m_data && m_data->m_host_executor != nullptr) {
+        throw std::runtime_error("amrex::IParser::registerVariables: cannot modify variables after compile()");
+    }
+
     if (m_data && m_data->m_iparser) {
         m_data->m_nvars = static_cast<int>(vars.size());
         for (int i = 0; i < m_data->m_nvars; ++i) {

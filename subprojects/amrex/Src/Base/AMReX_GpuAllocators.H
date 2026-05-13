@@ -103,41 +103,53 @@ namespace amrex {
         explicit constexpr PolymorphicArenaWrapper (Arena* a_arena)
             : m_arena(a_arena) {}
         [[nodiscard]] Arena* arena () const noexcept {
-            return (m_arena) ? m_arena : The_Arena();
+            //! After Arena::Finalize() the cached pointer is stale;
+            //! fall back to The_Null_Arena().
+            if (Arena::IsInitialized()) {
+                return (m_arena) ? m_arena : The_Arena();
+            } else {
+                return The_Null_Arena();
+            }
         }
         Arena* m_arena = nullptr;
     };
 
+    /// \ingroup amrex_memory
     template<typename T>
     class ArenaAllocator
         : public ArenaAllocatorBase<T,ArenaWrapper>
     {
     };
 
+    /// \ingroup amrex_memory
     template<typename T>
     class DeviceArenaAllocator
         : public ArenaAllocatorBase<T,DeviceArenaWrapper>
     {
     };
 
+    /// \ingroup amrex_memory
     template<typename T>
     class PinnedArenaAllocator
         : public ArenaAllocatorBase<T,PinnedArenaWrapper>
     {
     };
 
+    /// \ingroup amrex_memory
     template<typename T>
     class ManagedArenaAllocator
         : public ArenaAllocatorBase<T,ManagedArenaWrapper>
     {
     };
 
+    /// \ingroup amrex_memory
     template<typename T>
     class AsyncArenaAllocator
         : public ArenaAllocatorBase<T,AsyncArenaWrapper>
     {
     };
 
+    /// \ingroup amrex_memory
     template<typename T>
     class PolymorphicArenaAllocator
         : public ArenaAllocatorBase<T,PolymorphicArenaWrapper>
@@ -171,6 +183,9 @@ namespace amrex {
     template <typename T>
     struct IsPolymorphicArenaAllocator : std::false_type {};
 
+    template <typename T>
+    struct IsPolymorphicArenaAllocator<PolymorphicArenaAllocator<T> > : std::true_type {};
+
 #ifdef AMREX_USE_GPU
     template <typename T>
     struct RunOnGpu<ArenaAllocator<T> > : std::true_type {};
@@ -183,10 +198,6 @@ namespace amrex {
 
     template <typename T>
     struct RunOnGpu<AsyncArenaAllocator<T> > : std::true_type {};
-
-    template <typename T>
-    struct IsPolymorphicArenaAllocator<PolymorphicArenaAllocator<T> > : std::true_type {};
-
 #endif // AMREX_USE_GPU
 
 #ifdef AMREX_USE_GPU

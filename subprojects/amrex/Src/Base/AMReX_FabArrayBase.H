@@ -16,6 +16,7 @@
 #include <omp.h>
 #endif
 
+#include <cstdint>
 #include <ostream>
 #include <string>
 #include <utility>
@@ -153,7 +154,7 @@ public:
     //! Is this a good candidate for kernel fusing?
     [[nodiscard]] bool isFusingCandidate () const noexcept;
 
-    //
+    /// \cond DOXYGEN_IGNORE
     struct CacheStats
     {
         int         size{0};     //!< current size: nbuild - nerase
@@ -188,7 +189,7 @@ public:
                                           << "    max # of uses    : " << maxuse  << "\n";
         }
     };
-    //
+    /// \endcond
     //! Used by a bunch of routines when communicating via MPI.
     struct CopyComTag
     {
@@ -488,11 +489,13 @@ public:
         FB (const FabArrayBase& fa, const IntVect& nghost,
             bool cross, const Periodicity& period,
             bool enforce_periodicity_only, bool override_sync,
-            bool multi_ghost);
+            bool multi_ghost, IntVect const& sumboundary_src_nghost);
 
+        std::uint64_t m_id = std::numeric_limits<std::uint64_t>::max();
         IndexType    m_typ;
         IntVect      m_crse_ratio; //!< BoxArray in FabArrayBase may have crse_ratio.
         IntVect      m_ngrow;
+        IntVect      m_sb_snghost;
         bool         m_cross;
         bool         m_epo;
         bool         m_override_sync;
@@ -512,6 +515,7 @@ public:
         void define_fb (const FabArrayBase& fa);
         void define_epo (const FabArrayBase& fa);
         void define_os (const FabArrayBase& fa);
+        void define_sb (const FabArrayBase& fa);
         void tag_one_box (int krcv, BoxArray const& ba, DistributionMapping const& dm,
                           bool build_recv_tag);
     };
@@ -524,10 +528,8 @@ public:
     //
     const FB& getFB (const IntVect& nghost, const Periodicity& period,
                      bool cross=false, bool enforce_periodicity_only = false,
-                     bool override_sync = false) const;
-    //
-    void flushFB (bool no_assertion=false) const;       //!< This flushes its own FB.
-    static void flushFBCache (); //!< This flushes the entire cache.
+                     bool override_sync = false,
+                     IntVect const& sumboundary_src_nghost = IntVect(-1)) const;
 
     //
     //! parallel copy or add
@@ -536,7 +538,8 @@ public:
     {
         CPC (const FabArrayBase& dstfa, const IntVect& dstng,
              const FabArrayBase& srcfa, const IntVect& srcng,
-             const Periodicity& period, bool to_ghost_cells_only = false);
+             const Periodicity& period, bool to_ghost_cells_only = false,
+             const IntVect& offset = IntVect(0));
         CPC (const BoxArray& dstba, const DistributionMapping& dstdm,
              const Vector<int>& dstidx, const IntVect& dstng,
              const BoxArray& srcba, const DistributionMapping& srcdm,
@@ -547,10 +550,12 @@ public:
 
         [[nodiscard]] Long bytes () const;
 
+        std::uint64_t m_id = std::numeric_limits<std::uint64_t>::max();
         BDKey       m_srcbdk;
         BDKey       m_dstbdk;
         IntVect     m_srcng;
         IntVect     m_dstng;
+        IntVect     m_offset;
         Periodicity m_period;
         bool        m_tgco;
         BoxArray    m_srcba;
@@ -574,10 +579,8 @@ public:
     static CacheStats m_CPC_stats;
     //
     const CPC& getCPC (const IntVect& dstng, const FabArrayBase& src, const IntVect& srcng,
-                       const Periodicity& period, bool to_ghost_cells_only = false) const;
-    //
-    void flushCPC (bool no_assertion=false) const;      //!< This flushes its own CPC.
-    static void flushCPCache (); //!< This flusheds the entire cache.
+                       const Periodicity& period, bool to_ghost_cells_only = false,
+                       const IntVect& offset = IntVect(0)) const;
 
     //
     //! Rotate Boundary by 90
@@ -650,10 +653,12 @@ public:
     //! For ParallelFor(FabArray)
     struct ParForInfo
     {
-        ParForInfo (const FabArrayBase& fa, const IntVect& nghost, int nthreads);
+        ParForInfo (const FabArrayBase& fa, const IntVect& nghost);
         ~ParForInfo ();
 
-        std::pair<int*,int*> const& getBlocks () const { return m_nblocks_x; }
+        int getNBlocksPerBox (int nthreads) const {
+            return int((m_ncellsmax+nthreads-1)/nthreads);
+        }
         BoxIndexer const* getBoxes () const { return m_boxes; }
 
         ParForInfo () = delete;
@@ -664,14 +669,12 @@ public:
 
         BATransformer m_bat;
         IntVect m_ng;
-        int m_nthreads;
-        std::pair<int*,int*> m_nblocks_x;
+        Long m_ncellsmax = 0;
         BoxIndexer* m_boxes = nullptr;
         char* m_hp = nullptr;
-        char* m_dp = nullptr;
     };
 
-    ParForInfo const& getParForInfo (const IntVect& nghost, int nthreads) const;
+    ParForInfo const& getParForInfo (const IntVect& nghost) const;
 
     static std::multimap<BDKey,ParForInfo*> m_TheParForCache;
 
@@ -725,8 +728,19 @@ public:
     static AMREX_EXPORT bool m_alloc_single_chunk;
 
     [[nodiscard]] static bool getAllocSingleChunk () { return m_alloc_single_chunk; }
+
+    [[nodiscard]] static std::uint64_t getNextCommMetaDataId ();
+
+private:
+
+    void flushFB (bool no_assertion=false) const; //!< This flushes its own FB.
+    static void flushFBCache (); //!< This flushes the entire cache.
+
+    void flushCPC (bool no_assertion=false) const; //!< This flushes its own CPC.
+    static void flushCPCache (); //!< This flusheds the entire cache.
 };
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
     class SingleChunkArena final
         : public Arena
@@ -761,6 +775,7 @@ namespace detail {
         std::size_t m_size = 0;
     };
 }
+/// \endcond
 
 [[nodiscard]] int nComp (FabArrayBase const& fa);
 [[nodiscard]] IntVect nGrowVect (FabArrayBase const& fa);

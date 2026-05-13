@@ -4,6 +4,7 @@
 
 namespace amrex {
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
     // call_f_scalar_handler
@@ -13,7 +14,7 @@ namespace detail {
     auto call_f_scalar_handler (F const& f, N i)
         noexcept -> decltype(f(0))
     {
-        f(i);
+        return f(i);
     }
 
     template <typename F, typename N>
@@ -21,7 +22,7 @@ namespace detail {
     auto call_f_scalar_handler (F const& f, N i)
         noexcept -> decltype(f(0,Gpu::Handler{}))
     {
-        f(i, Gpu::Handler{});
+        return f(i, Gpu::Handler{});
     }
 
     // call_f_intvect_inner
@@ -31,7 +32,7 @@ namespace detail {
     auto call_f_intvect_inner (std::index_sequence<Ns...>, F const& f, IntVectND<1> iv, Args...args)
         noexcept -> decltype(f(0, 0, 0, args...))
     {
-        f(iv[0], 0, 0, args...);
+        return f(iv[0], 0, 0, args...);
     }
 
     template <typename F, std::size_t...Ns, class...Args>
@@ -39,7 +40,7 @@ namespace detail {
     auto call_f_intvect_inner (std::index_sequence<Ns...>, F const& f, IntVectND<2> iv, Args...args)
         noexcept -> decltype(f(0, 0, 0, args...))
     {
-        f(iv[0], iv[1], 0, args...);
+        return f(iv[0], iv[1], 0, args...);
     }
 
     template <typename F, int dim, std::size_t...Ns, class...Args>
@@ -47,7 +48,7 @@ namespace detail {
     auto call_f_intvect_inner (std::index_sequence<Ns...>, F const& f, IntVectND<dim> iv, Args...args)
         noexcept -> decltype(f(iv, args...))
     {
-        f(iv, args...);
+        return f(iv, args...);
     }
 
     template <typename F, int dim, std::size_t...Ns, class...Args>
@@ -55,7 +56,7 @@ namespace detail {
     auto call_f_intvect_inner (std::index_sequence<Ns...>, F const& f, IntVectND<dim> iv, Args...args)
         noexcept -> decltype(f(iv[Ns]..., args...))
     {
-        f(iv[Ns]..., args...);
+        return f(iv[Ns]..., args...);
     }
 
     // call_f_intvect_engine
@@ -65,7 +66,7 @@ namespace detail {
     auto call_f_intvect_engine (F const& f, IntVectND<dim> iv, RandomEngine engine)
         noexcept -> decltype(call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, engine))
     {
-        call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, engine);
+        return call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, engine);
     }
 
     // call_f_intvect_handler
@@ -75,7 +76,7 @@ namespace detail {
     auto call_f_intvect_handler (F const& f, IntVectND<dim> iv)
         noexcept -> decltype(call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv))
     {
-        call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv);
+        return call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv);
     }
 
     template <typename F, int dim>
@@ -83,7 +84,7 @@ namespace detail {
     auto call_f_intvect_handler (F const& f, IntVectND<dim> iv)
         noexcept -> decltype(call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, Gpu::Handler{}))
     {
-        call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, Gpu::Handler{});
+        return call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, Gpu::Handler{});
     }
 
     // call_f_intvect_ncomp_engine
@@ -93,7 +94,7 @@ namespace detail {
     auto call_f_intvect_ncomp_engine (F const& f, IntVectND<dim> iv, T n, RandomEngine engine)
         noexcept -> decltype(call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n, engine))
     {
-        call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n, engine);
+        return call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n, engine);
     }
 
     // call_f_intvect_ncomp_handler
@@ -103,7 +104,7 @@ namespace detail {
     auto call_f_intvect_ncomp_handler (F const& f, IntVectND<dim> iv, T n)
         noexcept -> decltype(call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n))
     {
-        call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n);
+        return call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n);
     }
 
     template <typename F, typename T, int dim>
@@ -111,10 +112,11 @@ namespace detail {
     auto call_f_intvect_ncomp_handler (F const& f, IntVectND<dim> iv, T n)
         noexcept -> decltype(call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n, Gpu::Handler{}))
     {
-        call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n, Gpu::Handler{});
+        return call_f_intvect_inner(std::make_index_sequence<dim>(), f, iv, n, Gpu::Handler{});
     }
 
 }
+/// \endcond
 
 template<typename T, typename L>
 void launch (T const& n, L&& f) noexcept
@@ -188,6 +190,7 @@ void ParallelFor (Gpu::KernelInfo const&, T n, L&& f) noexcept
     ParallelFor(n, std::forward<L>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <int idim, typename L, int dim>
@@ -217,6 +220,7 @@ void For_impND (L const& f, IntVectND<dim> const lo, IntVectND<dim> const hi, In
 }
 
 }
+/// \endcond
 
 template <typename L, int dim>
 AMREX_ATTRIBUTE_FLATTEN_FOR
@@ -248,6 +252,7 @@ void For (Gpu::KernelInfo const&, BoxND<dim> const& box, L&& f) noexcept
     For(box, std::forward<L>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <int idim, typename L, int dim>
@@ -280,6 +285,7 @@ void ParallelFor_impND (L const& f, IntVectND<dim> const lo, IntVectND<dim> cons
 }
 
 }
+/// \endcond
 
 template <typename L, int dim>
 AMREX_ATTRIBUTE_FLATTEN_FOR
@@ -311,6 +317,7 @@ void ParallelFor (Gpu::KernelInfo const&, BoxND<dim> const& box, L&& f) noexcept
     ParallelFor(box, std::forward<L>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <int idim, typename L, typename T, int dim>
@@ -340,6 +347,7 @@ void For_impND (L const& f, IntVectND<dim> const lo, IntVectND<dim> const hi, In
 }
 
 }
+/// \endcond
 
 template <typename T, typename L, int dim, typename M=std::enable_if_t<std::is_integral_v<T>> >
 AMREX_ATTRIBUTE_FLATTEN_FOR
@@ -373,6 +381,7 @@ void For (Gpu::KernelInfo const&, BoxND<dim> const& box, T ncomp, L&& f) noexcep
     For(box, ncomp, std::forward<L>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <int idim, typename L, typename T, int dim>
@@ -405,6 +414,7 @@ void ParallelFor_impND (L const& f, IntVectND<dim> const lo, IntVectND<dim> cons
 }
 
 }
+/// \endcond
 
 template <typename T, typename L, int dim, typename M=std::enable_if_t<std::is_integral_v<T>> >
 AMREX_ATTRIBUTE_FLATTEN_FOR
@@ -1225,6 +1235,7 @@ void ParallelForRNG (T n, L const& f) noexcept
     }
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <int idim, typename L, int dim>
@@ -1280,6 +1291,7 @@ void ParallelForRNG_impND (L const& f, IntVectND<dim> const lo, IntVectND<dim> c
 }
 
 }
+/// \endcond
 
 template <typename L, int dim>
 AMREX_ATTRIBUTE_FLATTEN_FOR

@@ -19,6 +19,8 @@
 
 namespace amrex {
 
+/// \cond DOXYGEN_IGNORE
+
 #ifdef AMREX_MEM_PROFILING
 int  BARef::numboxarrays         = 0;
 int  BARef::numboxarrays_hwm     = 0;
@@ -29,11 +31,14 @@ Long BARef::total_hash_bytes_hwm = 0L;
 #endif
 
 bool    BARef::initialized = false;
+/// \endcond
 bool BoxArray::initialized = false;
 
 namespace {
     const int bl_ignore_max = 100000;
 }
+
+/// \cond DOXYGEN_IGNORE
 
 BARef::BARef () // NOLINT(modernize-use-equals-default)
 {
@@ -187,7 +192,7 @@ BARef::resize (Long n) {
 #endif
     m_abox.resize(n);
     hash.clear();
-    has_hashmap = false;
+    has_hashmap.store(false, std::memory_order_release);
 #ifdef AMREX_MEM_PROFILING
     updateMemoryUsage_box(1);
 #endif
@@ -259,6 +264,8 @@ BARef::Finalize ()
 {
     initialized = false;
 }
+
+/// \endcond
 
 void
 BoxArray::Initialize ()
@@ -1311,6 +1318,33 @@ BoxArray::complementIn (const Box& bx) const
     return bl;
 }
 
+BoxList
+BoxArray::complementIn (const Box& bx, const Periodicity& period) const
+{
+    BoxList bl(bx.ixType());
+    BoxList bl2(bx.ixType());
+    BoxList bltmp(bx.ixType());
+    complementIn(bl, bx);
+    auto const& pshifts = period.shiftIntVect();
+    for (auto const& pit : pshifts) {
+        if (bl.isEmpty()) { break; }
+        if (pit != 0) {
+            bl2.clear();
+            for (auto const& b : bl) {
+                complementIn(bltmp, amrex::shift(b, pit));
+                if (bltmp.isNotEmpty()) {
+                    for (auto& btmp : bltmp) {
+                        btmp -= pit;
+                    }
+                    bl2.join(bltmp);
+                }
+            }
+            std::swap(bl, bl2);
+        }
+    }
+    return bl;
+}
+
 void
 BoxArray::complementIn (BoxList& bl, const Box& bx) const
 {
@@ -1411,7 +1445,7 @@ BoxArray::clear_hash_bin () const
         m_ref->updateMemoryUsage_hash(-1);
 #endif
         m_ref->hash.clear();
-        m_ref->has_hashmap = false;
+        m_ref->has_hashmap.store(false, std::memory_order_release);
     }
 }
 
@@ -1523,6 +1557,7 @@ BoxArray::getDoiHi () const noexcept
     return m_bat.doiHi();
 }
 
+/// \cond DOXYGEN_IGNORE
 BARef::HashType&
 BoxArray::getHashMap () const
 {
@@ -1534,7 +1569,7 @@ BoxArray::getHashMap () const
 #pragma omp critical(intersections_lock)
 #endif
     {
-        if (BoxHashMap.empty() && size() > 0)
+        if (!m_ref->HasHashMap() && size() > 0)
         {
             //
             // Calculate the bounding box & maximum extent of the boxes.
@@ -1566,16 +1601,13 @@ BoxArray::getHashMap () const
             m_ref->updateMemoryUsage_hash(1);
 #endif
 
-#ifdef AMREX_USE_OMP
-#pragma omp flush
-#pragma omp atomic write
-#endif
-            m_ref->has_hashmap = true;
+            m_ref->has_hashmap.store(true, std::memory_order_release);
         }
     }
 
     return BoxHashMap;
 }
+/// \endcond
 
 void
 BoxArray::uniqify ()

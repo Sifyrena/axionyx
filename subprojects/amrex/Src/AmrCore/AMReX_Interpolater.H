@@ -6,6 +6,11 @@
 #include <AMReX_GpuControl.H>
 #include <AMReX_InterpBase.H>
 
+/**
+ * \file AMReX_Interpolater.H
+ * \brief Collection of spatial interpolaters used by FillPatch and flux-register logic.
+ */
+
 namespace amrex {
 
 class Geometry;
@@ -22,22 +27,21 @@ class Interpolater
 {
 public:
     /**
-    * \brief Coarse to fine interpolation in space.
-    * This is a pure virtual function and hence MUST
-    * be implemented by derived classes.
+    * \brief Perform coarse-to-fine interpolation on a cell-centered FAB.
     *
-    * \param crse
-    * \param crse_comp
-    * \param fine
-    * \param fine_comp
-    * \param ncomp
-    * \param fine_region
-    * \param ratio
-    * \param crse_geom
-    * \param fine_geom
-    * \param bcr
-    * \param actual_comp
-    * \param actual_state
+    * \param crse        Source coarse FAB.
+    * \param crse_comp   Starting component in the coarse FAB.
+    * \param fine        Destination fine FAB.
+    * \param fine_comp   Starting component in the fine FAB.
+    * \param ncomp       Number of components to interpolate.
+    * \param fine_region Region of the fine FAB to fill.
+    * \param ratio       Refinement ratio between coarse and fine.
+    * \param crse_geom   Coarse Geometry.
+    * \param fine_geom   Fine Geometry.
+    * \param bcr         Boundary-condition records per component.
+    * \param actual_comp Component offset into the state vector (for BC lookup).
+    * \param actual_state Index of the state being interpolated (for query hooks).
+    * \param runon       Execution context (host/device) for the interpolation kernels.
     */
     virtual void interp (const FArrayBox& crse,
                          int              crse_comp,
@@ -54,22 +58,10 @@ public:
                          RunOn            runon) = 0;
 
     /**
-    * \brief Coarse to fine interpolation in space for face-based data.
+    * \brief Coarse-to-fine interpolation for face-based data (optional override).
     *
-    * \param crse
-    * \param crse_comp
-    * \param fine
-    * \param fine_comp
-    * \param ncomp
-    * \param fine_region
-    * \param fine_values
-    * \param fine_known
-    * \param ratio
-    * \param crse_geom
-    * \param fine_geom
-    * \param bcr
-    * \param bccomp
-    * \param runon
+    * By default, this aborts and callers should invoke interp() instead. Face-aware
+    * interpolaters override this to apply solve masks and BCs.
     */
     virtual void interp_face (const FArrayBox& /*crse*/,
                               const int        /*crse_comp*/,
@@ -87,23 +79,7 @@ public:
     { amrex::Abort("The version of this Interpolater for face-based data is not implemented or does not apply. Call 'interp' instead."); }
 
     /**
-    * \brief Coarse to fine interpolation in space.
-    *        Takes an Array of FArrayBox*s
-    *
-    * \param crse
-    * \param crse_comp
-    * \param fine
-    * \param fine_comp
-    * \param ncomp
-    * \param fine_region
-    * \param fine_values
-    * \param fine_known
-    * \param ratio
-    * \param crse_geom
-    * \param fine_geom
-    * \param bcr
-    * \param actual_comp
-    * \param actual_state
+    * \brief Interpolate arrays of face-centered FABs simultaneously (optional override).
     */
     virtual void interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& /*crse*/,
                              const int         /*crse_comp*/,
@@ -123,20 +99,7 @@ public:
     { amrex::Abort("The Array<FArrayBox*, AMREX_SPACEDIM> version of this Interpolater is not implemented or does not apply. Call 'interp' instead."); }
 
     /**
-    * \brief Re-visit the interpolation to protect against under- or overshoots.
-    *
-    * \param crse
-    * \param crse_comp
-    * \param fine
-    * \param fine_comp
-    * \param fine_state
-    * \param state_comp
-    * \param ncomp
-    * \param fine_region
-    * \param ratio
-    * \param crse_geom
-    * \param fine_geom
-    * \param bcr
+    * \brief Optional limiter hook that reprojects fine data to avoid undershoot/overshoot.
     */
     virtual void protect (const FArrayBox& /*crse*/,
                           int              /*crse_comp*/,
@@ -195,6 +158,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -253,6 +217,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -366,6 +331,7 @@ public:
     * \param crse_geom
     * \param fine_geom
     * \param bcr
+    * \param runon
     */
     void protect (const FArrayBox& crse,
                   int              crse_comp,
@@ -425,6 +391,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -481,6 +448,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -541,6 +509,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -697,6 +666,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -753,11 +723,8 @@ public:
     * \param ncomp
     * \param fine_region
     * \param ratio
-    * \param crse_geom
-    * \param fine_geom
-    * \param bcr
-    * \param actual_comp
-    * \param actual_state
+    * \param solve_mask
+    * \param runon
     */
     void interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
                      int         crse_comp,
@@ -818,6 +785,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,
@@ -874,11 +842,9 @@ public:
     * \param ncomp
     * \param fine_region
     * \param ratio
+    * \param solve_mask
     * \param crse_geom
-    * \param fine_geom
-    * \param bcr
-    * \param actual_comp
-    * \param actual_state
+    * \param runon
     */
     void interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
                      int         crse_comp,
@@ -888,7 +854,7 @@ public:
                      const Box&        fine_region,
                      const IntVect&    ratio,
                      Array<IArrayBox*, AMREX_SPACEDIM> const& solve_mask,
-                     const Geometry&   /*crse_geom*/,
+                     const Geometry&   crse_geom,
                      const Geometry&   /*fine_geom*/,
                      Vector<Array<BCRec, AMREX_SPACEDIM> > const& /*bcr*/,
                      int         /*actual_comp*/,
@@ -939,6 +905,7 @@ public:
     * \param bcr
     * \param actual_comp
     * \param actual_state
+    * \param runon
     */
     void interp (const FArrayBox& crse,
                  int              crse_comp,

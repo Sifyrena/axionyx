@@ -14,6 +14,7 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_BlockMutex.cpp
        AMReX_Enum.H
        AMReX_GpuComplex.H
+       AMReX_Order.H
        AMReX_SmallMatrix.H
        AMReX_ConstexprFor.H
        AMReX_Vector.H
@@ -80,6 +81,8 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_CArena.cpp
        AMReX_PArena.H
        AMReX_PArena.cpp
+       AMReX_SArena.H
+       AMReX_SArena.cpp
        AMReX_DataAllocator.H
        AMReX_BLProfiler.H
        AMReX_BLBackTrace.H
@@ -105,10 +108,8 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_Box.H
        AMReX_Box.cpp
        AMReX_BoxIterator.H
-       AMReX_BoxIterator.cpp
        AMReX_Dim3.H
        AMReX_IntVect.H
-       AMReX_IntVect.cpp
        AMReX_IndexType.H
        AMReX_IndexType.cpp
        AMReX_Loop.H
@@ -121,7 +122,6 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_RealBox.H
        AMReX_RealBox.cpp
        AMReX_RealVect.H
-       AMReX_RealVect.cpp
        # Unions of rectangle -----------------------------------------------------
        AMReX_BoxList.H
        AMReX_BoxList.cpp
@@ -222,6 +222,7 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_GpuLaunchMacrosC.nolint.H
        AMReX_GpuLaunchFunctsG.H
        AMReX_GpuLaunchFunctsC.H
+       AMReX_GpuLaunchFunctsSIMD.H
        AMReX_GpuError.H
        AMReX_GpuDevice.H
        AMReX_GpuDevice.cpp
@@ -238,9 +239,11 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_GpuReduce.H
        AMReX_GpuAllocators.H
        AMReX_GpuContainers.H
+       AMReX_TrackedVector.H
        AMReX_MFParallelFor.H
        AMReX_MFParallelForC.H
        AMReX_MFParallelForG.H
+       AMReX_SIMD.H
        AMReX_TagParallelFor.H
        AMReX_CTOParallelForImpl.H
        AMReX_ParReduce.H

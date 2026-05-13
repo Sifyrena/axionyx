@@ -2,11 +2,17 @@
 #define AMREX_PARSER_EXE_H_
 #include <AMReX_Config.H>
 
+/**
+ * \file AMReX_Parser_Exe.H
+ * \brief Bytecode instruction formats and helpers for the runtime parser.
+ */
+
 #include <AMReX_Parser_Y.H>
 #include <AMReX_Stack.H>
 #include <AMReX_Vector.H>
 
 #include <limits>
+#include <utility>
 
 #ifndef AMREX_PARSER_STACK_SIZE
 #define AMREX_PARSER_STACK_SIZE 16
@@ -52,8 +58,10 @@ enum parser_exe_t {
     PARSER_EXE_DIV_PN,
     PARSER_EXE_SQUARE,
     PARSER_EXE_POWI,
+    PARSER_EXE_FMA_VPV,
     PARSER_EXE_IF,
-    PARSER_EXE_JUMP
+    PARSER_EXE_JUMP,
+    PARSER_EXE_USER_FN
 };
 
 struct alignas(8) ParserExeNull {
@@ -208,6 +216,13 @@ struct alignas(8) ParserExePOWI {
     int i;
 };
 
+struct alignas(8) ParserExeFMA_VPV {
+    enum parser_exe_t type = PARSER_EXE_FMA_VPV;
+    int i;       // variable index
+    double a;    // multiplier
+    double b;    // addend
+};
+
 struct alignas(8) ParserExeIF {
     enum parser_exe_t type = PARSER_EXE_IF;
     int offset;
@@ -217,6 +232,62 @@ struct alignas(8) ParserExeJUMP {
     enum parser_exe_t type = PARSER_EXE_JUMP;
     int offset;
 };
+
+struct alignas(8) ParserExeUserFn {
+    enum parser_exe_t type = PARSER_EXE_USER_FN;
+    short argc;
+    void* fh;
+    void* fd;
+};
+
+namespace parser_detail
+{
+    template <typename T, int N>
+    AMREX_GPU_HOST_DEVICE AMREX_NO_INLINE
+    void call_user_fn (ParserExeUserFn* p, Stack<T,N>& pstack)
+    {
+        short argc = p->argc;
+        if (argc == 1) {
+            AMREX_IF_ON_HOST  (( pstack.top() = ParserUserFn1(p->fh)(pstack.top()); ))
+#if !defined(AMREX_USE_SYCL)
+            AMREX_IF_ON_DEVICE(( pstack.top() = ParserUserFn1(p->fd)(pstack.top()); ))
+#endif
+        } else if (argc == 2) {
+            T a1 = pstack.top(); // NOLINT
+            pstack.pop();
+            AMREX_IF_ON_HOST  (( pstack.top() = ParserUserFn2(p->fh)(pstack.top(),a1); ))
+#if defined(AMREX_USE_SYCL)
+            amrex::ignore_unused(a1);
+#else
+            AMREX_IF_ON_DEVICE(( pstack.top() = ParserUserFn2(p->fd)(pstack.top(),a1); ))
+#endif
+        } else if (argc == 3) {
+            T a2 = pstack.top(); // NOLINT
+            pstack.pop();
+            T a1 = pstack.top(); // NOLINT
+            pstack.pop();
+            AMREX_IF_ON_HOST  (( pstack.top() = ParserUserFn3(p->fh)(pstack.top(),a1,a2); ))
+#if defined(AMREX_USE_SYCL)
+            amrex::ignore_unused(a1,a2);
+#else
+            AMREX_IF_ON_DEVICE(( pstack.top() = ParserUserFn3(p->fd)(pstack.top(),a1,a2); ))
+#endif
+        } else if (argc == 4) {
+            T a3 = pstack.top(); // NOLINT
+            pstack.pop();
+            T a2 = pstack.top(); // NOLINT
+            pstack.pop();
+            T a1 = pstack.top(); // NOLINT
+            pstack.pop();
+            AMREX_IF_ON_HOST  (( pstack.top() = ParserUserFn4(p->fh)(pstack.top(),a1,a2,a3); ))
+#if defined(AMREX_USE_SYCL)
+            amrex::ignore_unused(a1,a2,a3);
+#else
+            AMREX_IF_ON_DEVICE(( pstack.top() = ParserUserFn4(p->fd)(pstack.top(),a1,a2,a3); ))
+#endif
+        }
+    }
+}
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 double parser_exe_eval (const char* p, double const* x)
@@ -477,6 +548,14 @@ double parser_exe_eval (const char* p, double const* x)
             p += sizeof(ParserExePOWI);
             break;
         }
+        case PARSER_EXE_FMA_VPV:
+        {
+            int i = ((ParserExeFMA_VPV*)p)->i;
+            double d = AMREX_PARSER_GET_DATA(i);
+            pstack.push(((ParserExeFMA_VPV*)p)->a * d + ((ParserExeFMA_VPV*)p)->b);
+            p += sizeof(ParserExeFMA_VPV);
+            break;
+        }
         case PARSER_EXE_IF:
         {
             double cond = pstack.top(); // NOLINT
@@ -493,6 +572,12 @@ double parser_exe_eval (const char* p, double const* x)
             p += sizeof(ParserExeJUMP) + offset;
             break;
         }
+        case PARSER_EXE_USER_FN:
+        {
+            parser_detail::call_user_fn((ParserExeUserFn*)p, pstack);
+            p += sizeof(ParserExeUserFn);
+            break;
+        }
         default:
             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(false,"parser_exe_eval: unknown node type");
         }
@@ -501,7 +586,9 @@ double parser_exe_eval (const char* p, double const* x)
 }
 
 void parser_compile_exe_size (struct parser_node* node, char*& p, std::size_t& exe_size,
-                              int& max_stack_size, int& stack_size, Vector<char const*>& local_variables);
+                              int& max_stack_size, int& stack_size,
+                              Vector<char const*>& local_variables,
+                              std::map<std::string,std::pair<void*,void*>> const& ufs);
 
 inline std::size_t
 parser_exe_size (struct amrex_parser* parser, int& max_stack_size, int& stack_size)
@@ -512,19 +599,21 @@ parser_exe_size (struct amrex_parser* parser, int& max_stack_size, int& stack_si
     max_stack_size = 0;
     stack_size = 0;
     Vector<char const*> local_variables;
-    parser_compile_exe_size(parser->ast, p, exe_size, max_stack_size, stack_size, local_variables);
+    std::map<std::string,std::pair<void*,void*>> ufs;
+    parser_compile_exe_size(parser->ast, p, exe_size, max_stack_size, stack_size, local_variables, ufs);
     stack_size -= static_cast<int>(local_variables.size())+1;
     return exe_size+sizeof(ParserExeNull);
 }
 
 inline Vector<char const*>
-parser_compile (struct amrex_parser* parser, char* p)
+parser_compile (struct amrex_parser* parser,
+                std::map<std::string,std::pair<void*,void*>> const& ufs, char* p)
 {
     std::size_t exe_size = 0;
     int max_stack_size = 0;
     int stack_size = 0;
     Vector<char const*> local_variables;
-    parser_compile_exe_size(parser->ast, p, exe_size, max_stack_size, stack_size, local_variables);
+    parser_compile_exe_size(parser->ast, p, exe_size, max_stack_size, stack_size, local_variables, ufs);
     new(p) ParserExeNull;
     return local_variables;
 }

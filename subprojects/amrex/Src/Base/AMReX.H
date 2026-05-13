@@ -11,6 +11,7 @@
 #include <AMReX_Extension.H>
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -55,6 +56,7 @@ namespace amrex
         extern AMREX_EXPORT bool handle_sigint;
         extern AMREX_EXPORT bool handle_sigabrt;
         extern AMREX_EXPORT bool handle_sigfpe;
+        extern AMREX_EXPORT bool handle_sigill;
 
         extern AMREX_EXPORT bool call_addr2line;
         extern AMREX_EXPORT bool throw_exception;
@@ -77,7 +79,16 @@ namespace amrex
     AMReX* Initialize (MPI_Comm mpi_comm,
                        std::ostream& a_osout = std::cout,
                        std::ostream& a_oserr = std::cerr,
-                       ErrorHandler a_errhandler = nullptr);
+                       ErrorHandler a_errhandler = nullptr,
+                       int a_device_id = -1);
+
+    // The returned AMReX* is non-owning! To delete it, call Finalize(AMReX*).
+    AMReX* Initialize (int& argc, char**& argv,
+                       const std::function<void()>& func_parm_parse,
+                       std::ostream& a_osout = std::cout,
+                       std::ostream& a_oserr = std::cerr,
+                       ErrorHandler a_errhandler = nullptr,
+                       int a_device_id = -1);
 
     // The returned AMReX* is non-owning! To delete it, call Finalize(AMReX*).
     AMReX* Initialize (int& argc, char**& argv, bool build_parm_parse=true,
@@ -85,7 +96,8 @@ namespace amrex
                        const std::function<void()>& func_parm_parse = {},
                        std::ostream& a_osout = std::cout,
                        std::ostream& a_oserr = std::cerr,
-                       ErrorHandler a_errhandler = nullptr);
+                       ErrorHandler a_errhandler = nullptr,
+                       int a_device_id = -1);
 
     // \brief Minimal version of initialization.
     //
@@ -181,25 +193,40 @@ namespace amrex
     * in <AMReX_BLassert.H>.
     */
 
-    void Assert_host (const char* EX, const char* file, int line, const char* msg);
+    void Assert_host (const char* EX, const char* file, int line, const char* msg,
+                      std::size_t msg_size=0);
 
     AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-    void Assert (const char* EX, const char* file, int line, const char* msg = nullptr) {
-#if defined(NDEBUG)
+    void Assert (const char* EX, const char* file, int line) {
+#if defined(NDEBUG) && !defined(AMREX_USE_ASSERTION)
+        AMREX_IF_ON_DEVICE((amrex::ignore_unused(EX,file,line);))
+#else
+        AMREX_IF_ON_DEVICE((
+            AMREX_DEVICE_PRINTF("Assertion `%s' failed, file \"%s\", line %d",
+                                    EX, file, line);
+            AMREX_DEVICE_ASSERT(0);
+        ))
+#endif
+        AMREX_IF_ON_HOST((Assert_host(EX,file,line,nullptr,0U);))
+    }
+
+    AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    void Assert (const char* EX, const char* file, int line, const char* msg) {
+#if defined(NDEBUG) && !defined(AMREX_USE_ASSERTION)
         AMREX_IF_ON_DEVICE((amrex::ignore_unused(EX,file,line,msg);))
 #else
         AMREX_IF_ON_DEVICE((
-                if (msg) {
-                AMREX_DEVICE_PRINTF("Assertion `%s' failed, file \"%s\", line %d, Msg: %s",
-                                        EX, file, line, msg);
-                } else {
-                AMREX_DEVICE_PRINTF("Assertion `%s' failed, file \"%s\", line %d",
-                                        EX, file, line);
-                }
-                AMREX_DEVICE_ASSERT(0);
+            AMREX_DEVICE_PRINTF("Assertion `%s' failed, file \"%s\", line %d, Msg: %s",
+                                    EX, file, line, msg);
+            AMREX_DEVICE_ASSERT(0);
         ))
 #endif
-        AMREX_IF_ON_HOST((Assert_host(EX,file,line,msg);))
+        AMREX_IF_ON_HOST((Assert_host(EX,file,line,msg,std::strlen(msg));))
+    }
+
+    AMREX_FORCE_INLINE
+    void Assert (const char* EX, const char* file, int line, const std::string& msg) {
+        Assert_host(EX,file,line,msg.c_str(),msg.size());
     }
 
     /**
@@ -289,6 +316,8 @@ namespace amrex
         // be moved to the top.
         static void push (AMReX* pamrex);
 
+        static void push (std::unique_ptr<AMReX> pamrex);
+
         // This erases `pamrex` from the stack.
         static void erase (AMReX* pamrex);
 
@@ -314,6 +343,7 @@ namespace amrex
     [[nodiscard]] inline FPExcept operator| (FPExcept a, FPExcept b)
     {
         using T = std::underlying_type_t<FPExcept>;
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
         return static_cast<FPExcept>(static_cast<T>(a) | static_cast<T>(b));
     }
 
@@ -337,11 +367,11 @@ namespace amrex
      * the others. The example below disables FPE invalid and
      * divide-by-zero, and later restores the previous settings.
      *
-     \verbatim
+     \code{.cpp}
          auto prev_excepts = disableFPExcept(FPExcept::invalid | FPExcept::zero);
          // ....
          setFPExcept(prev_excepts); // restore previous settings
-     \endverbatim
+     \endcode
      */
     [[nodiscard]] FPExcept disableFPExcept (FPExcept excepts);
 
@@ -352,11 +382,11 @@ namespace amrex
      * the others. The example below enables all FPE traps, and later
      * restores the previous settings.
      *
-     \verbatim
-         auto prev_excepts = disableFPExcept(FPExcept::all);
+     \code{.cpp}
+         auto prev_excepts = enableFPExcept(FPExcept::all);
          // ....
          setFPExcept(prev_excepts); // restore previous settings
-     \endverbatim
+     \endcode
      */
     [[nodiscard]] FPExcept enableFPExcept (FPExcept excepts);
 }

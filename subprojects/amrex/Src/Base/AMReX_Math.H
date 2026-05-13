@@ -5,9 +5,12 @@
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Extension.H>
 #include <AMReX_INT.H>
+#include <AMReX_SIMD.H>
 #include <AMReX_REAL.H>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
+#include <numbers>
 #include <type_traits>
 #include <utility>
 
@@ -15,7 +18,9 @@
 #  include <sycl/sycl.hpp>
 #endif
 
-namespace amrex { inline namespace disabled {
+namespace amrex { // NOLINT(modernize-concat-nested-namespaces)
+/// \cond DOXYGEN_IGNORE
+inline namespace disabled {
     // If it is inside namespace amrex, or amrex namespace is imported with using namespace amrex or
     // amrex::disabled, unqualified abs functions are disabled with a compile time error such as,
     // call of overload abs(int&) is ambiguous, or a link time error such as, undefined reference to
@@ -28,7 +33,9 @@ namespace amrex { inline namespace disabled {
     AMREX_GPU_HOST_DEVICE int abs (int);
     AMREX_GPU_HOST_DEVICE long abs (long);
     AMREX_GPU_HOST_DEVICE long long abs (long long);
-}}
+}
+/// \endcond
+}
 
 namespace amrex::Math {
 
@@ -61,7 +68,7 @@ using std::isinf;
 template <typename T>
 constexpr std::enable_if_t<std::is_floating_point_v<T>,T> pi ()
 {
-    return T(3.1415926535897932384626433832795029L);
+    return std::numbers::pi_v<T>;
 }
 
 //! Return cos(x*pi) given x
@@ -112,6 +119,7 @@ float sinpi (float x)
 #endif
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
     AMREX_FORCE_INLINE void sincos (double x, double* sinx, double* cosx) {
 #if defined(_GNU_SOURCE) && !defined(__APPLE__)
@@ -131,6 +139,22 @@ namespace detail {
 #endif
     }
 }
+/// \endcond
+
+#ifdef AMREX_USE_SIMD
+//! Return sine and cosine of given number
+template<typename T_Real,
+         std::enable_if_t<amrex::simd::stdx::is_simd_v<T_Real>,int> = 0>
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+std::pair<T_Real,T_Real> sincos (T_Real x)
+{
+    using namespace amrex::simd::stdx;
+    std::pair<T_Real,T_Real> r;
+    r.first = sin(x);
+    r.second = cos(x);
+    return r;
+}
+#endif
 
 //! Return sine and cosine of given number
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -159,6 +183,22 @@ std::pair<float,float> sincos (float x)
 #endif
     return r;
 }
+
+#ifdef AMREX_USE_SIMD
+//! Return sin(pi*x) and cos(pi*x) given x
+template<typename T_Real,
+         std::enable_if_t<amrex::simd::stdx::is_simd_v<T_Real>,int> = 0>
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+std::pair<T_Real,T_Real> sincospi (T_Real x)
+{
+    using namespace amrex::simd::stdx;
+    T_Real const px = pi<typename T_Real::value_type>() * x;
+    std::pair<T_Real,T_Real> r;
+    r.first = sin(px);
+    r.second = cos(px);
+    return r;
+}
+#endif
 
 //! Return sin(pi*x) and cos(pi*x) given x
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -290,6 +330,62 @@ T comp_ellint_2 (T k)
     }
 
     return Kcomp*sum_val;
+}
+
+//! Return inverse square root of x
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+double rsqrt (double x)
+{
+    double r;
+#if defined(AMREX_USE_SYCL)
+    AMREX_IF_ON_DEVICE(( r = sycl::rsqrt(x); ))
+#else
+    AMREX_IF_ON_DEVICE(( r = ::rsqrt(x); ))
+#endif
+    AMREX_IF_ON_HOST(( r = 1. / std::sqrt(x); ))
+    return r;
+}
+
+//! Return inverse square root of x
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+float rsqrt (float x)
+{
+    float r;
+#if defined(AMREX_USE_SYCL)
+    AMREX_IF_ON_DEVICE(( r = sycl::rsqrt(x); ))
+#else
+    AMREX_IF_ON_DEVICE(( r = ::rsqrtf(x); ))
+#endif
+    AMREX_IF_ON_HOST(( r = 1.F / std::sqrt(x); ))
+    return r;
+}
+
+//! Return 10**x
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+double exp10 (double x)
+{
+    double r;
+#if defined(AMREX_USE_SYCL)
+    AMREX_IF_ON_DEVICE(( r = sycl::exp10(x); ))
+#else
+    AMREX_IF_ON_DEVICE(( r = ::exp10(x); ))
+#endif
+    AMREX_IF_ON_HOST(( r = std::pow(10.0, x); ))
+    return r;
+}
+
+//! Return 10**x
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+float exp10 (float x)
+{
+    float r;
+#if defined(AMREX_USE_SYCL)
+    AMREX_IF_ON_DEVICE(( r = sycl::exp10(x); ))
+#else
+    AMREX_IF_ON_DEVICE(( r = ::exp10f(x); ))
+#endif
+    AMREX_IF_ON_HOST(( r = std::pow(10.0F, x); ))
+    return r;
 }
 
 /***************************************************************************************************

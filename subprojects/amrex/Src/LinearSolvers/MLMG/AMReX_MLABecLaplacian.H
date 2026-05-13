@@ -7,8 +7,8 @@
 
 namespace amrex {
 
-// (alpha * a - beta * (del dot b grad)) phi
-
+/// \ingroup amrex_solver_mlmg
+/// (alpha * a - beta * (del dot b grad)) phi
 template <typename MF>
 class MLABecLaplacianT
     : public MLCellABecLapT<MF>
@@ -61,7 +61,7 @@ public:
 
     /**
      * Set scalar constants A and B in the equation:
-     * (A \alpha - B \nabla \cdot \beta \nabla ) \phi = f
+     * `(A \alpha - B \nabla \cdot \beta \nabla ) \phi = f`
      * for the Multi-Level AB Laplacian Solver.
      */
     template <typename T1, typename T2,
@@ -154,14 +154,14 @@ public:
     void prepareForSolve () override;
     [[nodiscard]] bool isSingular (int amrlev) const override { return m_is_singular[amrlev]; }
     [[nodiscard]] bool isBottomSingular () const override { return m_is_singular[0]; }
-    void Fapply (int amrlev, int mglev, MF& out, const MF& in) const final;
-    void Fsmooth (int amrlev, int mglev, MF& sol, const MF& rhs, int redblack) const final;
+    void Fapply (int amrlev, int mglev, MF& out, const MF& in) const override;
+    void Fsmooth (int amrlev, int mglev, MF& sol, const MF& rhs, int redblack) const override;
     void FFlux (int amrlev, const MFIter& mfi,
                 const Array<FAB*,AMREX_SPACEDIM>& flux,
                 const FAB& sol, Location /* loc */,
-                int face_only=0) const final;
+                int face_only=0) const override;
 
-    void normalize (int amrlev, int mglev, MF& mf) const final;
+    void normalize (int amrlev, int mglev, MF& mf) const override;
 
     [[nodiscard]] RT getAScalar () const final { return m_a_scalar; }
     [[nodiscard]] RT getBScalar () const final { return m_b_scalar; }
@@ -172,7 +172,7 @@ public:
 
     [[nodiscard]] std::unique_ptr<MLLinOpT<MF>> makeNLinOp (int /*grid_size*/) const final;
 
-    [[nodiscard]] bool supportNSolve () const final;
+    [[nodiscard]] bool supportNSolve () const override;
 
     void copyNSolveSolution (MF& dst, MF const& src) const final;
 
@@ -200,13 +200,13 @@ public:
 
 protected:
 
-    bool m_needs_update = true;
-
     Vector<int> m_is_singular;
 
     [[nodiscard]] bool supportRobinBC () const noexcept override { return true; }
 
 private:
+
+    bool m_needs_update = true;
 
     int m_ncomp = 1;
 
@@ -391,7 +391,7 @@ MLABecLaplacianT<MF>::setBCoeffs (int amrlev, Vector<T> const& beta)
     const int ncomp = this->getNComp();
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         for (int icomp = 0; icomp < ncomp; ++icomp) {
-            m_b_coeffs[amrlev][0][idim].setVal(RT(beta[icomp]));
+            m_b_coeffs[amrlev][0][idim].setVal(RT(beta[icomp]), icomp, 1, 0);
         }
     }
     m_needs_update = true;
@@ -483,6 +483,7 @@ MLABecLaplacianT<MF>::applyMetricTermsCoeffs ()
 //    \tilde{alpha}_i = alpha_i + (1-B) beta_{i+1/2} / h^2
 //    \tilde{rhs}_i = rhs_i + A beta_{i+1/2} / h^2
 //
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 template <typename LP>
 void applyRobinBCTermsCoeffs (LP& linop)
@@ -597,6 +598,7 @@ void applyRobinBCTermsCoeffs (LP& linop)
     }
 }
 } // namespace detail
+/// \endcond
 
 template <typename MF>
 void
@@ -841,7 +843,9 @@ MLABecLaplacianT<MF>::Fapply (int amrlev, int mglev, MF& out, const MF& in) cons
                                 dxinv, ascalar, bscalar);
             });
         }
-        Gpu::streamSynchronize();
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
     } else
 #endif
     {
@@ -1031,7 +1035,9 @@ MLABecLaplacianT<MF>::Fsmooth (int amrlev, int mglev, MF& sol, const MF& rhs, in
                 });
             }
         }
-        Gpu::streamSynchronize();
+        if (Ax.local_size() > 0 || !Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
     } else
 #endif
     {
@@ -1271,7 +1277,9 @@ MLABecLaplacianT<MF>::normalize (int amrlev, int mglev, MF& mf) const
                                 AMREX_D_DECL(bxma[box_no],byma[box_no],bzma[box_no]),
                                 dxinv, ascalar, bscalar);
         });
-        Gpu::streamSynchronize();
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
     } else
 #endif
     {
@@ -1383,7 +1391,9 @@ MLABecLaplacianT<MF>::makeNLinOp (int /*grid_size*/) const
                 ama[box_no](i,j,k,n) = huge_alpha;
             }
         });
-        Gpu::streamSynchronize();
+        if (alpha.local_size() > 0 || !Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
     } else
 #endif
     {
@@ -1434,7 +1444,9 @@ MLABecLaplacianT<MF>::copyNSolveSolution (MF& dst, MF const& src) const
                 dstma[box_no](i,j,k,n) = RT(0.0);
             }
         });
-        Gpu::streamSynchronize();
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
     } else
 #endif
     {
@@ -1460,6 +1472,7 @@ MLABecLaplacianT<MF>::copyNSolveSolution (MF& dst, MF const& src) const
 
 extern template class MLABecLaplacianT<MultiFab>;
 
+/// \ingroup amrex_solver_mlmg
 using MLABecLaplacian = MLABecLaplacianT<MultiFab>;
 
 }

@@ -664,7 +664,7 @@ void mlndlap_gauss_seidel_c (Box const& bx, Array4<Real> const& sol,
 AMREX_FORCE_INLINE
 void tridiagonal_solve (Array1D<Real,0,31>& a_ls, Array1D<Real,0,31>& b_ls, Array1D<Real,0,31>& c_ls,
                         Array1D<Real,0,31>& r_ls, Array1D<Real,0,31>& u_ls, Array1D<Real,0,31>& gam,
-                        int ilen ) noexcept
+                        int ilen )
 {
     Real bet = b_ls(0);
     u_ls(0) = r_ls(0) / bet;
@@ -684,7 +684,7 @@ inline
 void mlndlap_gauss_seidel_with_line_solve_aa (Box const& bx, Array4<Real> const& sol,
                               Array4<Real const> const& rhs, Array4<Real const> const& sig,
                               Array4<int const> const& msk,
-                              GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
+                              GpuArray<Real,AMREX_SPACEDIM> const& dxinv)
 {
     Real facx = Real(1.0/36.0)*dxinv[0]*dxinv[0];
     Real facy = Real(1.0/36.0)*dxinv[1]*dxinv[1];
@@ -1093,7 +1093,7 @@ void mlndlap_interpadd_aa (int i, int j, int k, Array4<Real> const& fine,
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlndlap_semi_interpadd_aa (int i, int j, int k, Array4<Real> const& fine,
                            Array4<Real const> const& crse, Array4<Real const> const& sig,
-                           Array4<int const> const& msk, int idir) noexcept
+                           Array4<int const> const& msk, int idir)
 {
     if (idir == 2 )
     {
@@ -1374,6 +1374,31 @@ void mlndlap_mknewu (int i, int j, int k, Array4<Real> const& u, Array4<Real con
         * (-p(i,j,k  )-p(i+1,j,k  )+p(i,j+1,k  )+p(i+1,j+1,k  )
            -p(i,j,k+1)-p(i+1,j,k+1)+p(i,j+1,k+1)+p(i+1,j+1,k+1));
     u(i,j,k,2) -= sig(i,j,k)*facz
+        * (-p(i,j,k  )-p(i+1,j,k  )-p(i,j+1,k  )-p(i+1,j+1,k  )
+           +p(i,j,k+1)+p(i+1,j,k+1)+p(i,j+1,k+1)+p(i+1,j+1,k+1));
+}
+
+// Harmonic-average (anisotropic sigma) variant.  Used when the node-
+// centered Poisson operator was set up with a multi-component sigma
+// (see MLNodeLaplacian::setSigma and setMapped) so each velocity
+// component is corrected with its own sigma direction.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void mlndlap_mknewu_ha (int i, int j, int k, Array4<Real> const& u, Array4<Real const> const& p,
+                        Array4<Real const> const& sx,
+                        Array4<Real const> const& sy,
+                        Array4<Real const> const& sz,
+                        GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
+{
+    Real facx = Real(0.25)*dxinv[0];
+    Real facy = Real(0.25)*dxinv[1];
+    Real facz = Real(0.25)*dxinv[2];
+    u(i,j,k,0) -= sx(i,j,k)*facx
+        * (-p(i,j,k  )+p(i+1,j,k  )-p(i,j+1,k  )+p(i+1,j+1,k  )
+           -p(i,j,k+1)+p(i+1,j,k+1)-p(i,j+1,k+1)+p(i+1,j+1,k+1));
+    u(i,j,k,1) -= sy(i,j,k)*facy
+        * (-p(i,j,k  )-p(i+1,j,k  )+p(i,j+1,k  )+p(i+1,j+1,k  )
+           -p(i,j,k+1)-p(i+1,j,k+1)+p(i,j+1,k+1)+p(i+1,j+1,k+1));
+    u(i,j,k,2) -= sz(i,j,k)*facz
         * (-p(i,j,k  )-p(i+1,j,k  )-p(i,j+1,k  )-p(i+1,j+1,k  )
            +p(i,j,k+1)+p(i+1,j,k+1)+p(i,j+1,k+1)+p(i+1,j+1,k+1));
 }
@@ -1944,6 +1969,7 @@ void mlndlap_res_cf_contrib_cs (int i, int j, int k, Array4<Real> const& res,
 // RAP
 //
 
+/// \cond DOXYGEN_IGNORE
 namespace nodelap_detail {
 
     constexpr int ist_000 = 0;
@@ -1957,6 +1983,7 @@ namespace nodelap_detail {
     constexpr int ist_inv = 8;
     constexpr int n_sten  = 9;
 }
+/// \endcond
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlndlap_set_stencil (Box const& bx, Array4<Real> const& sten,
@@ -5581,6 +5608,7 @@ void mlndlap_restriction_rap (int i, int j, int k, Array4<Real> const& crse,
 
 #ifdef AMREX_USE_EB
 
+/// \cond DOXYGEN_IGNORE
 namespace nodelap_detail {
 
     constexpr int i_S_x     = 0;
@@ -5643,6 +5671,7 @@ namespace nodelap_detail {
     constexpr int numSurfIntgs =  7;
 
 }
+/// \endcond
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlndlap_set_connection (int i, int j, int k, Array4<Real> const& conn,
@@ -6298,14 +6327,14 @@ void mlndlap_fillijmat_sten_cpu (Box const& ndbx,
                                  Real* mat, // NOLINT(readability-non-const-parameter)
                                  Array4<Real const> const& sten) noexcept
 {
-    constexpr int ist_000 = 1-1;
-    constexpr int ist_p00 = 2-1;
-    constexpr int ist_0p0 = 3-1;
-    constexpr int ist_00p = 4-1;
-    constexpr int ist_pp0 = 5-1;
-    constexpr int ist_p0p = 6-1;
-    constexpr int ist_0pp = 7-1;
-    constexpr int ist_ppp = 8-1;
+    constexpr int ist_000 = 0;
+    constexpr int ist_p00 = 1;
+    constexpr int ist_0p0 = 2;
+    constexpr int ist_00p = 3;
+    constexpr int ist_pp0 = 4;
+    constexpr int ist_p0p = 5;
+    constexpr int ist_0pp = 6;
+    constexpr int ist_ppp = 7;
 
     constexpr auto gidmax = std::numeric_limits<AtomicInt>::max();
     HypreInt nelems = 0;

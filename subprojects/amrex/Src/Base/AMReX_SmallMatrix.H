@@ -7,16 +7,17 @@
 #include <AMReX_Extension.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_ConstexprFor.H>
+#include <AMReX_Order.H>
 
 #include <algorithm>
 #include <initializer_list>
 #include <iostream>
 #include <tuple>
 #include <type_traits>
+#include <utility>
+
 
 namespace amrex {
-
-    enum struct Order { C, F, RowMajor=C, ColumnMajor=F };
 
     /**
      * \brief Matrix class with compile-time size
@@ -71,10 +72,10 @@ namespace amrex {
          * The initializer list is assumed to be in row-major order, even when
          * the ordering for the SmallMatrix object is colum-major. Below is
          * an example of constructing a matrix with 2 rows and 3 columns.
-         \verbatim
-             SmallMatrix<double,2,3> M{{11., 12., 13.},
-                                       {21., 22., 23.}};
-         \endverbatim
+         * \code{.cpp}
+         *     SmallMatrix<double,2,3> M{{11., 12., 13.},
+         *                               {21., 22., 23.}};
+         * \endcode
          */
         AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
         explicit SmallMatrix (std::initializer_list<std::initializer_list<T>> const& init)
@@ -228,6 +229,30 @@ namespace amrex {
             return I;
         }
 
+        /** Returns the skew-symmetric matrix Omega (symplectic form)
+         *
+         * With 2x2 block-diagonal structure [[0,1],[-1,0]].
+         * Requires a square matrix of even dimension and a floating-point
+         * element type.
+         *
+         * @see https://en.wikipedia.org/wiki/Symplectic_matrix
+         */
+        template <int MM=NRows, int NN=NCols,
+                  std::enable_if_t<MM==NN && MM%2==0 && std::is_floating_point_v<T>, int> = 0>
+        static constexpr
+        AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+        SmallMatrix<T,NRows,NCols,ORDER,StartIndex>
+        Omega () noexcept {
+            static_assert(StartIndex == 0 || StartIndex == 1);
+            SmallMatrix<T,NRows,NCols,ORDER,StartIndex> omega{};
+            constexpr_for<0,NRows/2>(
+                [&] (int i) {
+                    omega(2*i   + StartIndex, 2*i+1 + StartIndex) =  T(1);
+                    omega(2*i+1 + StartIndex, 2*i   + StartIndex) = -T(1);
+                });
+            return omega;
+        }
+
         //! Returns a matrix initialized with zeros
         static constexpr
         AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -378,11 +403,11 @@ namespace amrex {
         }
 
         //! Returns matrix product of two matrices
-        template <class U, int N1, int N2, int N3, Order Ord, int SI>
+        template <class U, class V, int N1, int N2, int N3, Order Ord, int SI>
         AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-        friend SmallMatrix<U,N1,N3,Ord,SI>
+        friend decltype(auto)
         operator* (SmallMatrix<U,N1,N2,Ord,SI> const& lhs,
-                   SmallMatrix<U,N2,N3,Ord,SI> const& rhs);
+                   SmallMatrix<V,N2,N3,Ord,SI> const& rhs);
 
         //! Returns the dot product of two vectors
         [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -407,17 +432,20 @@ namespace amrex {
         T m_mat[NRows*NCols];
     };
 
-    template <class U, int N1, int N2, int N3, Order Ord, int SI>
+    template <class U, class V, int N1, int N2, int N3, Order Ord, int SI>
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-    SmallMatrix<U,N1,N3,Ord,SI>
+    decltype(auto)
     operator* (SmallMatrix<U,N1,N2,Ord,SI> const& lhs,
-               SmallMatrix<U,N2,N3,Ord,SI> const& rhs)
+               SmallMatrix<V,N2,N3,Ord,SI> const& rhs)
     {
         static_assert(SI == 0 || SI == 1);
-        SmallMatrix<U,N1,N3,Ord,SI> r;
+
+        using P = decltype(std::declval<U>() * std::declval<V>());
+        SmallMatrix<P,N1,N3,Ord,SI> r;
+
         if constexpr (Ord == Order::F) {
             for (int j = SI; j < N3+SI; ++j) {
-                constexpr_for<SI,N1+SI>([&] (int i) { r(i,j) = U(0); });
+                constexpr_for<SI,N1+SI>([&] (int i) { r(i,j) = P(0); });
                 for (int k = SI; k < N2+SI; ++k) {
                     auto b = rhs(k,j);
                     constexpr_for<SI,N1+SI>([&] (int i)
@@ -428,7 +456,7 @@ namespace amrex {
             }
         } else {
             for (int i = SI; i < N1+SI; ++i) {
-                constexpr_for<SI,N3+SI>([&] (int j) { r(i,j) = U(0); });
+                constexpr_for<SI,N3+SI>([&] (int j) { r(i,j) = P(0); });
                 for (int k = SI; k < N2+SI; ++k) {
                     auto a = lhs(i,k);
                     constexpr_for<SI,N3+SI>([&] (int j)

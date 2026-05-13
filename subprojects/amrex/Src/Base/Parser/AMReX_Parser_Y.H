@@ -2,24 +2,43 @@
 #define AMREX_PARSER_Y_H_
 #include <AMReX_Config.H>
 
+/**
+ * \file AMReX_Parser_Y.H
+ * \brief Parser symbol-table definitions shared by the generated lexer/parser.
+ */
+
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_GpuPrint.H>
 #include <AMReX_Math.H>
 #include <AMReX_Print.H>
 #include <AMReX_REAL.H>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
+
+#if defined(AMREX_USE_SYCL) && (defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_CLANG_COMPILER))
+#define AMREX_SYCL_EXT_INTEL_MATH 1
+#include <sycl/ext/intel/math.hpp>
+#endif
 
 void amrex_parsererror (char const *s, ...);
 
 namespace amrex {
+
+using ParserUserFn1 = double (*)(double);
+using ParserUserFn2 = double (*)(double,double);
+using ParserUserFn3 = double (*)(double,double,double);
+using ParserUserFn4 = double (*)(double,double,double,double);
 
 enum parser_f1_t {  // Built-in functions with one argument
     PARSER_SQRT,
@@ -87,6 +106,7 @@ enum parser_f2_t {  // Built-in functions with two arguments
     PARSER_LEQ,
     PARSER_EQ,
     PARSER_NEQ,
+    PARSER_CMP_CHAIN,
     PARSER_AND,
     PARSER_OR,
     PARSER_HEAVISIDE,
@@ -113,6 +133,7 @@ std::string_view parser_f2_s[] =
     "leq",
     "eq",
     "neq",
+    "cmp_chain",
     "and",
     "or",
     "heaviside",
@@ -148,6 +169,9 @@ enum parser_node_t {
     PARSER_F1,
     PARSER_F2,
     PARSER_F3,
+    PARSER_USRF1,
+    PARSER_USRF2,
+    PARSER_USRFN,
     PARSER_ASSIGN,
     PARSER_LIST
 };
@@ -169,6 +193,9 @@ std::string_view parser_node_s[] =
     "f1",
     "f2",
     "f3",
+    "usrf1",
+    "usrf2",
+    "usrfn",
     "assign",
     "list"
 };
@@ -222,13 +249,41 @@ struct alignas(parser_node) parser_f3 { /* Builtin functions with three argument
     struct parser_node* n3;
 };
 
+struct alignas(parser_node) parser_usrf1 {  /* User functions with one argument */
+    enum parser_node_t type;
+    enum parser_node_t padding;
+    char* name;
+    struct parser_node* l; // NOLINT(misc-confusable-identifiers)
+    struct parser_node* padding1;
+};
+
+struct alignas(parser_node) parser_usrf2 {  /* User functions with two arguments */
+    enum parser_node_t type;
+    enum parser_node_t padding;
+    char* name;
+    struct parser_node* l; // NOLINT(misc-confusable-identifiers)
+    struct parser_node* r;
+};
+
+struct alignas(parser_node) parser_usrfn { /* User functions with three or more arguments */
+    enum parser_node_t type;
+    short argc;
+    char* name;
+    struct parser_node* n1;
+    struct parser_node** others;
+};
+
 struct alignas(parser_node) parser_assign {
     enum parser_node_t type;
     struct parser_symbol* s;
     struct parser_node* v;
 };
 
-static_assert(sizeof(parser_f3) <= sizeof(parser_node), "amrex parser: sizeof parser_node too small");
+static_assert(sizeof(parser_f3) <= sizeof(parser_node) &&
+              sizeof(parser_usrf1) <= sizeof(parser_node) &&
+              sizeof(parser_usrf2) <= sizeof(parser_node) &&
+              sizeof(parser_usrfn) <= sizeof(parser_node),
+              "amrex parser: sizeof parser_node too small");
 
 /*******************************************************************/
 
@@ -245,8 +300,15 @@ struct parser_node* parser_newf2 (enum parser_f2_t ftype, struct parser_node* l,
                                   struct parser_node* r);
 struct parser_node* parser_newf3 (enum parser_f3_t ftype, struct parser_node* n1,
                                   struct parser_node* n2, struct parser_node* n3);
+struct parser_node* parser_newusrf1 (struct parser_symbol* fname, struct parser_node* l);
+struct parser_node* parser_newusrf2 (struct parser_symbol* fname, struct parser_node* l,
+                                     struct parser_node* r);
+struct parser_node* parser_newusrfn (struct parser_symbol* fname,
+                                     std::vector<struct parser_node*> const& nv);
 struct parser_node* parser_newassign (struct parser_symbol* s, struct parser_node* v);
 struct parser_node* parser_newlist (struct parser_node* nl, struct parser_node* nr);
+struct parser_node* parser_newcmpchain (struct parser_node* nl, enum parser_f2_t cmp,
+                                        struct parser_node* nr);
 
 /*******************************************************************/
 
@@ -263,24 +325,27 @@ struct amrex_parser {
 
 struct amrex_parser* amrex_parser_new ();
 void amrex_parser_delete (struct amrex_parser* parser);
+void amrex_parser_delete_ptrs ();
 
-struct amrex_parser* parser_dup (struct amrex_parser* source);
-struct parser_node* parser_ast_dup (struct amrex_parser* parser, struct parser_node* node, int move);
+struct parser_node* parser_ast_dup (struct amrex_parser* parser, struct parser_node* node);
 
 void parser_regvar (struct amrex_parser* parser, char const* name, int i);
 void parser_setconst (struct amrex_parser* parser, char const* name, double c);
 void parser_print (struct amrex_parser* parser);
 std::set<std::string> parser_get_symbols (struct amrex_parser* parser);
+std::map<std::string,int> parser_get_user_functions (struct amrex_parser* parser);
 int parser_depth (struct amrex_parser* parser);
 
 /* We need to walk the tree in these functions */
-void parser_ast_optimize (struct parser_node* node);
+void parser_ast_optimize (struct parser_node*& node, std::map<std::string,double>& local_consts);
 std::size_t parser_ast_size (struct parser_node* node);
 void parser_ast_print (struct parser_node* node, std::string const& space, std::ostream& printer);
 void parser_ast_regvar (struct parser_node* node, char const* name, int i);
 void parser_ast_setconst (struct parser_node* node, char const* name, double c);
 void parser_ast_get_symbols (struct parser_node* node, std::set<std::string>& symbols,
                              std::set<std::string>& local_symbols);
+void parser_ast_get_user_functions (struct parser_node* node,
+                                    std::map<std::string,int>& user_functions);
 int parser_ast_depth (struct parser_node* node);
 void parser_ast_sort (struct parser_node* node);
 
@@ -288,6 +353,7 @@ void parser_ast_sort (struct parser_node* node);
 double parser_get_number (struct parser_node* node);
 void parser_set_number (struct parser_node* node, double v);
 bool parser_node_equal (struct parser_node* a, struct parser_node* b);
+bool parser_same_symbol (struct parser_node* a, struct parser_node* b);
 /*******************************************************************/
 
 template <typename T>
@@ -388,33 +454,97 @@ AMREX_GPU_HOST_DEVICE AMREX_NO_INLINE
 T parser_math_atan2 (T a, T b) { return std::atan2(a,b); }
 
 template <typename T>
+AMREX_FORCE_INLINE
+T parser_math_jn_host (int a, T b)
+{
+#if defined(_WIN32) && defined(__MINGW32__)
+    // the implementation below has been tested on linux
+    int const n = a < 0 ? -a : a;
+    T const x = b < T(0) ? -b : b;
+    T r = std::cyl_bessel_j(T(n), x);
+    if ((n % 2 != 0) && ((a < 0) != (b < T(0)))) {
+        r = -r;
+    }
+    return r;
+#elif defined(_WIN32)
+    return ::_jn(a,b);
+#else
+    return ::jn(a,b);
+#endif
+}
+
+#ifdef AMREX_USE_GPU
+template <typename T>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE
+T parser_math_jn_device (int a, T b)
+{
+#if defined(AMREX_USE_SYCL) && !defined(AMREX_SYCL_EXT_INTEL_MATH)
+    amrex::ignore_unused(a,b);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(false, "parser: jn is not supported for SYCL without Intel extension.");
+    return 0;
+#elif defined(AMREX_USE_SYCL)
+    return sycl::ext::intel::math::jn(a, b);
+#else
+    return ::jn(a,b);
+#endif
+}
+#endif
+
+template <typename T>
+AMREX_FORCE_INLINE
+T parser_math_yn_host (int a, T b)
+{
+#if defined(_WIN32) && defined(__MINGW32__)
+    // the implementation below has been tested on linux
+    int const n = a < 0 ? -a : a;
+    if (b < T(0)) {
+        return std::numeric_limits<T>::quiet_NaN();
+    }
+    T r = std::cyl_neumann(T(n), b);
+    if ((n % 2 != 0) && (a < 0)) {
+        r = -r;
+    }
+    return r;
+#elif defined(_WIN32)
+    return ::_yn(a,b);
+#else
+    return ::yn(a,b);
+#endif
+}
+
+#ifdef AMREX_USE_GPU
+template <typename T>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE
+T parser_math_yn_device (int a, T b)
+{
+#if defined(AMREX_USE_SYCL) && !defined(AMREX_SYCL_EXT_INTEL_MATH)
+    amrex::ignore_unused(a,b);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(false, "parser: yn is not supported for SYCL without Intel extension.");
+    return 0;
+#elif defined(AMREX_USE_SYCL)
+    return sycl::ext::intel::math::yn(a, b);
+#else
+    return ::yn(a,b);
+#endif
+}
+#endif
+
+template <typename T>
 AMREX_GPU_HOST_DEVICE AMREX_NO_INLINE
 T parser_math_jn (int a, T b)
 {
-#if defined AMREX_USE_SYCL || defined __MINGW32__
-    amrex::ignore_unused(a,b);
-    // neither jn(f) nor std::cyl_bessel_j work yet
-    // https://github.com/oneapi-src/oneAPI-spec/issues/308
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(false, "parser: jn in SYCL not supported yet");
-    return 0.0;
-#else
-    return jn(a, b);
-#endif
+    // Note that T is always double.
+    AMREX_IF_ON_HOST(( return parser_math_jn_host(a,b); ))
+    AMREX_IF_ON_DEVICE(( return parser_math_jn_device(a,b); ))
 }
 
 template <typename T>
 AMREX_GPU_HOST_DEVICE AMREX_NO_INLINE
 T parser_math_yn (int a, T b)
 {
-#if defined AMREX_USE_SYCL || defined __MINGW32__
-    amrex::ignore_unused(a,b);
-    // neither yn(f) nor std::cyl_bessel_y work yet
-    // https://github.com/oneapi-src/oneAPI-spec/issues/308
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(false, "parser: yn in SYCL not supported yet");
-    return 0.0;
-#else
-    return yn(a, b);
-#endif
+    // Note that T is always double.
+    AMREX_IF_ON_HOST(( return parser_math_yn_host(a,b); ))
+    AMREX_IF_ON_DEVICE(( return parser_math_yn_device(a,b); ))
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE double
@@ -469,12 +599,19 @@ parser_call_f2 (enum parser_f2_t type, double a, double b)
         return (a == b) ? 1.0 : 0.0;
     case PARSER_NEQ:
         return (a != b) ? 1.0 : 0.0;
+    case PARSER_CMP_CHAIN:
     case PARSER_AND:
         return ((a != 0.0) && (b != 0.0)) ? 1.0 : 0.0;
     case PARSER_OR:
         return ((a != 0.0) || (b != 0.0)) ? 1.0 : 0.0;
     case PARSER_HEAVISIDE:
-        return (a < 0.0) ? 0.0 : ((a > 0.0) ? 1.0 : b);
+        if (a < 0.0) {
+            return 0.0;
+        } else if (a > 0.0) {
+            return 1.0;
+        } else {
+            return b;
+        }
     case PARSER_JN:
         return parser_math_jn<double>(int(a),b);
     case PARSER_YN:

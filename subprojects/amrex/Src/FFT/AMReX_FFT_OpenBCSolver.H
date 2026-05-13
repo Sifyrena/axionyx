@@ -6,6 +6,21 @@
 namespace amrex::FFT
 {
 
+/**
+ * \file AMReX_FFT_OpenBCSolver.H
+ *
+ * FFT-based solver for open-boundary convolution problems via Green's functions.
+ */
+
+/**
+ * \ingroup amrex_fft
+ * \brief Convolution-based solver for open boundary conditions using Green's functions.
+ *
+ * The class wraps an internal `R2C` plan and multiplies spectral data by a user-provided
+ * Green's function to solve Laplace/Poisson problems on a rectangular domain.
+ * It currently solves one right-hand-side component per call; the supplied
+ * `FFT::Info` must have `batch_size == 1`.
+ */
 template <typename T = Real>
 class OpenBCSolver
 {
@@ -13,13 +28,36 @@ public:
     using MF = typename R2C<T>::MF;
     using cMF = typename R2C<T>::cMF;
 
+    /**
+     * \brief Build a solver over \p domain using the FFT Info settings in \p info.
+     *
+     * \param domain Physical domain (cell or nodal indexing).
+     * \param info   Optional FFT configuration. Batched solves are not supported.
+     */
     explicit OpenBCSolver (Box const& domain, Info const& info = Info{});
 
+    /**
+     * \brief Populate the spectral Green's function used by subsequent solves.
+     *
+     * \tparam F Callable type satisfying `T(int i, int j, int k)`.
+     * \param greens_function Functor that evaluates the physical-space Green's function.
+     */
     template <class F>
     void setGreensFunction (F const& greens_function);
 
+    /**
+     * \brief Solve for \p phi given right-hand side \p rho.
+     *
+     * \param phi Solution MultiFab (overwritten in place).
+     * \param rho Right-hand-side MultiFab.
+     */
     void solve (MF& phi, MF const& rho);
 
+    /**
+     * \brief Access the physical domain this solver was built for.
+     *
+     * \return Original (un-extended) problem domain.
+     */
     [[nodiscard]] Box const& Domain () const { return m_domain; }
 
 private:
@@ -51,6 +89,9 @@ OpenBCSolver<T>::OpenBCSolver (Box const& domain, Info const& info)
       m_r2c(OpenBCSolver<T>::make_grown_domain(domain,info),
             m_info.setDomainStrategy(FFT::DomainStrategy::slab))
 {
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_info.batch_size == 1,
+        "FFT::OpenBCSolver does not support FFT::Info::batch_size > 1");
+
 #if (AMREX_SPACEDIM == 3)
     if (m_info.twod_mode) {
         auto gdom = make_grown_domain(domain,m_info);
@@ -97,7 +138,7 @@ void OpenBCSolver<T>::setGreensFunction (F const& greens_function)
         }
         AMREX_ASSERT(nimages[0] == 2);
         box.shift(-lo);
-        amrex::ParallelFor(box, [=] AMREX_GPU_DEVICE (int i, int j, int k)
+        amrex::ParallelForOMP(box, [=] AMREX_GPU_DEVICE (int i, int j, int k)
         {
             T G;
             if (i == len[0] || j == len[1] || k == len[2]) {
@@ -143,12 +184,7 @@ void OpenBCSolver<T>::setGreensFunction (F const& greens_function)
         if (srcfab) {
             auto* dstfab = detail::get_fab(m_G_fft);
             if (dstfab) {
-#if defined(AMREX_USE_GPU)
-                Gpu::dtod_memcpy_async
-#else
-                std::memcpy
-#endif
-                    (dstfab->dataPtr(), srcfab->dataPtr(), dstfab->nBytes());
+                Gpu::dtod_memcpy_async(dstfab->dataPtr(), srcfab->dataPtr(), dstfab->nBytes());
             } else {
                 amrex::Abort("FFT::OpenBCSolver: how did this happen");
             }
@@ -191,7 +227,7 @@ void OpenBCSolver<T>::solve (MF& phi, MF const& rho)
                 AMREX_ASSERT(leng == rhobox.numPts());
             }
 #endif
-            amrex::ParallelFor(rhobox.numPts(), [=] AMREX_GPU_DEVICE (Long i)
+            amrex::ParallelForOMP(rhobox.numPts(), [=] AMREX_GPU_DEVICE (Long i)
             {
 #if (AMREX_SPACEDIM == 3)
                 Long isrc = i % leng;

@@ -1,4 +1,5 @@
 
+#include "AMReX_ParallelDescriptor.H"
 #include <AMReX_VisMF.H>
 #include <AMReX_AsyncOut.H>
 #include <AMReX_PlotFileUtil.H>
@@ -113,7 +114,7 @@ WriteGenericPlotfileHeader (std::ostream &HeaderFile,
         }
         HeaderFile << '\n';
         for (int i = 0; i < finest_level; ++i) {
-            HeaderFile << ref_ratio[i][0] << ' ';
+            HeaderFile << ref_ratio[i][0] << ' '; // For backward compatibility, ref_ratio is saved as a scalar.
         }
         HeaderFile << '\n';
         for (int i = 0; i <= finest_level; ++i) {
@@ -235,6 +236,9 @@ WriteMultiLevelPlotfile (const std::string& plotfilename, int nlevels,
                 data = mf[level];
             }
             VisMF::Write(*data, MultiFabFileFullPrefix(level, plotfilename, levelPrefix, mfPrefix));
+        }
+        if (VisMF::GetBarrierAfterLevel()) {
+            ParallelDescriptor::Barrier();
         }
     }
 }

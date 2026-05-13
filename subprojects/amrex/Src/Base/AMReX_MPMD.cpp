@@ -54,9 +54,9 @@ void Initialize_without_split (int argc, char* argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &myproc);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-    int* p;
+    int* p = nullptr;
     MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_APPNUM, &p, &flag);
-    appnum = *p;
+    appnum = (flag && p) ? *p : -1;
 
     std::vector<int> all_appnum(nprocs);
     MPI_Allgather(&appnum, 1, MPI_INT, all_appnum.data(), 1, MPI_INT, MPI_COMM_WORLD);
@@ -141,7 +141,9 @@ int MyProgId ()
 
 Copier::Copier (BoxArray const& ba, DistributionMapping const& dm,
         bool send_ba)
-        : m_ba(ba), m_dm(dm)
+        : m_send_id(FabArrayBase::getNextCommMetaDataId()),
+          m_recv_id(FabArrayBase::getNextCommMetaDataId()),
+          m_ba(ba), m_dm(dm)
 {
     int rank_offset = myproc - ParallelDescriptor::MyProc();
     int this_root, other_root;
@@ -277,7 +279,9 @@ Copier::Copier (BoxArray const& ba, DistributionMapping const& dm,
 }
 
 Copier::Copier (bool)
-    : m_is_thread_safe(true)
+    : m_send_id(FabArrayBase::getNextCommMetaDataId()),
+      m_recv_id(FabArrayBase::getNextCommMetaDataId()),
+      m_is_thread_safe(true)
 {
     int rank_offset = myproc - ParallelDescriptor::MyProc();
     int this_root, other_root;

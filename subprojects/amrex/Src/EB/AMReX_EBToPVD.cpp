@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <limits>
 
+namespace amrex {
+
 namespace {
 amrex::Real dot_product(const std::array<amrex::Real,3>& a, const std::array<amrex::Real,3>& b)
 {
@@ -21,8 +23,6 @@ bool intersects(amrex::Real val)
 }
 
 }
-
-namespace amrex {
 
 void EBToPVD::EBToPolygon(const Real* problo, const Real* dx,
       const Box & bx, Array4<EBCellFlag const> const& flag,
@@ -201,7 +201,7 @@ void EBToPVD::WriteEBVTP(const int myID) const
       myfile << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
       myfile << "<PolyData>\n";
       myfile << "<Piece NumberOfPoints=\"" << m_points.size() << "\" NumberOfVerts=\"0\" " // NOLINT
-         << "NumberOfLines=\"0\" NumberOfString=\"0\" NumberOfPolys=\" " // NOLINT
+         << "NumberOfLines=\"0\" NumberOfStrips=\"0\" NumberOfPolys=\" " // NOLINT
          << m_connectivity.size() << "\">\n";
       print_points(myfile);
       print_connectivity(myfile);

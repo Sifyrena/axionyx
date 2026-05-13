@@ -27,6 +27,15 @@ static AmrexFFT& get_fft(Box const& domain)
     if (!s_fft || s_fft_domain != domain) {
         s_fft        = std::make_unique<AmrexFFT>(domain);
         s_fft_domain = domain;
+        // Register a one-time cleanup so s_fft is destroyed *inside*
+        // amrex::Finalize(), before AMReX tears down MPI and vtables.
+        // Without this, the static unique_ptr destructs after Finalize()
+        // and triggers "pure virtual function called".
+        static bool registered = false;
+        if (!registered) {
+            amrex::ExecOnFinalize([]{ s_fft.reset(); });
+            registered = true;
+        }
     }
     return *s_fft;
 }

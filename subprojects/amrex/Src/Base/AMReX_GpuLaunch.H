@@ -11,6 +11,7 @@
 #include <AMReX_GpuDevice.H>
 #include <AMReX_GpuMemory.H>
 #include <AMReX_GpuReduce.H>
+#include <AMReX_Arena.H>
 #include <AMReX_Tuple.H>
 #include <AMReX_Box.H>
 #include <AMReX_Loop.H>
@@ -34,9 +35,13 @@
 #ifdef AMREX_USE_CUDA
 #  define AMREX_LAUNCH_KERNEL(MT, blocks, threads, sharedMem, stream, ... ) \
         amrex::launch_global<MT><<<blocks, threads, sharedMem, stream>>>(__VA_ARGS__)
+#  define AMREX_LAUNCH_KERNEL_NOBOUND(blocks, threads, sharedMem, stream, ... ) \
+        amrex::launch_global    <<<blocks, threads, sharedMem, stream>>>(__VA_ARGS__)
 #elif defined(AMREX_USE_HIP)
 #  define AMREX_LAUNCH_KERNEL(MT, blocks, threads, sharedMem, stream, ... ) \
-        hipLaunchKernelGGL(launch_global<MT>, blocks, threads, sharedMem, stream, __VA_ARGS__)
+        hipLaunchKernelGGL(amrex::launch_global<MT>, blocks, threads, sharedMem, stream, __VA_ARGS__)
+#  define AMREX_LAUNCH_KERNEL_NOBOUND(blocks, threads, sharedMem, stream, ... ) \
+        hipLaunchKernelGGL(amrex::launch_global    , blocks, threads, sharedMem, stream, __VA_ARGS__)
 #endif
 
 
@@ -50,6 +55,7 @@ namespace amrex {
     template<class L, class... Lambdas>
     AMREX_GPU_GLOBAL void launch_global (L f0, Lambdas... fs) { f0(); call_device(fs...); }
 
+    /// \cond DOXYGEN_IGNORE
     template<class L>
     AMREX_GPU_DEVICE void call_device (L&& f0) noexcept { f0(); }
 
@@ -58,6 +64,7 @@ namespace amrex {
         f0();
         call_device(std::forward<Lambdas>(fs)...);
     }
+    /// \endcond
 #endif
 
 // CPU variation
@@ -78,28 +85,12 @@ namespace amrex {
 namespace Gpu {
 
 #ifdef AMREX_USE_GPU
-    inline constexpr std::size_t numThreadsPerBlockParallelFor () {
+    constexpr std::size_t numThreadsPerBlockParallelFor () {
         return AMREX_GPU_MAX_THREADS;
     }
 #else
-    inline constexpr std::size_t numThreadsPerBlockParallelFor () { return 0; }
+    constexpr std::size_t numThreadsPerBlockParallelFor () { return 0; }
 #endif
-
-// ************************************************
-
-    struct ComponentBox {
-        Box box;
-        int ic;
-        int nc;
-    };
-
-    struct GridSize {
-        int numBlocks;
-        int numThreads;
-        int globalBlockId;
-    };
-
-// ************************************************
 
     AMREX_GPU_HOST_DEVICE
     inline
@@ -223,6 +214,87 @@ namespace Gpu {
 }
 }
 
+#ifdef AMREX_USE_SYCL
+/// \cond DOXYGEN_IGNORE
+namespace amrex::detail {
+
+    template <typename... L> constexpr bool is_big_kernel () {
+        return (sizeof(L) + ... + 0) > 1792;
+    }
+
+    template <typename... L>
+    struct SyclKernelDevPtr
+    {
+        using Ls = GpuTuple<L...>;
+        Ls* m_dp = nullptr;
+        Ls* m_hp = nullptr;
+        gpuStream_t m_stream;
+
+        SyclKernelDevPtr (L const&... f, gpuStream_t const& stream)
+            : m_stream(stream)
+        {
+            if constexpr (is_big_kernel<L...>()) {
+                std::size_t sz = sizeof(Ls);
+                m_dp = (Ls*)The_Arena()->alloc(sz);
+                m_hp = (Ls*)The_Pinned_Arena()->alloc(sz);
+                new (m_hp) Ls(f...);
+                auto* l_hp = (void const*)m_hp;
+                auto* l_dp = (void*)m_dp;
+                stream.queue->submit([&] (sycl::handler& h) {
+                    h.memcpy(l_dp, l_hp, sz);
+                });
+            } else {
+                amrex::ignore_unused(f...);
+            }
+        }
+
+        ~SyclKernelDevPtr ()
+        {
+            if constexpr (is_big_kernel<Ls>()) {
+                try {
+                    m_stream.queue->wait_and_throw();
+                } catch (sycl::exception const& ex) {
+                    if (m_dp) {
+                        The_Arena()->free((void*)m_dp);
+                        m_dp = nullptr;
+                    }
+                    if (m_hp) {
+                        m_hp->~Ls();
+                        The_Pinned_Arena()->free((void*)m_hp);
+                        m_hp = nullptr;
+                    }
+                    amrex::Abort(std::string("~SyclKernelDevPtr: ")+ex.what());
+                }
+                if (m_dp) {
+                    The_Arena()->free((void*)m_dp);
+                    m_dp = nullptr;
+                }
+                if (m_hp) {
+                    m_hp->~Ls();
+                    The_Pinned_Arena()->free((void*)m_hp);
+                    m_hp = nullptr;
+                }
+            }
+        }
+
+        template <int N>
+        auto get () const
+        {
+            using pointer_t = std::add_pointer_t<
+                std::add_const_t<typename std::tuple_element<N, Ls>::type>>;
+            if (m_hp && m_dp) {
+                std::ptrdiff_t offset = (char*)(&(amrex::get<N>(*m_hp))) - (char*)m_hp;
+                return pointer_t((char const*)m_dp + offset);
+            } else {
+                return pointer_t(nullptr);
+            }
+        }
+    };
+
+}
+/// \endcond
+#endif
+
 
 #ifdef AMREX_USE_GPU
 #include <AMReX_GpuLaunchMacrosG.H>
@@ -230,10 +302,144 @@ namespace Gpu {
 #else
 #include <AMReX_GpuLaunchMacrosC.H>
 #include <AMReX_GpuLaunchFunctsC.H>
+#include <AMReX_SIMD.H>
 #endif
+#include <AMReX_GpuLaunchFunctsSIMD.H>
 
 #include <AMReX_GpuLaunch.nolint.H>
 
 #include <AMReX_CTOParallelForImpl.H>
+
+namespace amrex {
+
+#if defined(AMREX_USE_GPU) || !defined(AMREX_USE_OMP)
+
+/**
+ * \ingroup amrex_execution
+ * \brief Performance-portable kernel launch function with optional OpenMP threading.
+ *
+ * For GPU builds and for CPU builds without OpenMP support, this is the
+ * same as ParalleFor. For CPU builds with OpenMP enabled, this function
+ * uses OpenMP threading.
+ */
+template <typename T, typename L, typename M=std::enable_if_t<std::is_integral_v<T>> >
+void ParallelForOMP (T n, L const& f) noexcept
+{
+    ParallelFor(n, f);
+}
+
+/**
+ * \ingroup amrex_execution
+ * \brief Performance-portable kernel launch function with optional OpenMP threading.
+ *
+ * For GPU builds and for CPU builds without OpenMP support, this is the
+ * same as ParalleFor. For CPU builds with OpenMP enabled, this function
+ * uses OpenMP threading.
+ */
+template <typename L>
+void ParallelForOMP (Box const& box, L const& f) noexcept
+{
+    ParallelFor(box, f);
+}
+
+/**
+ * \ingroup amrex_execution
+ * \brief Performance-portable kernel launch function with optional OpenMP threading.
+ *
+ * For GPU builds and for CPU builds without OpenMP support, this is the
+ * same as ParalleFor. For CPU builds with OpenMP enabled, this function
+ * uses OpenMP threading.
+ */
+template <typename T, typename L, typename M=std::enable_if_t<std::is_integral_v<T>> >
+void ParallelForOMP (Box const& box, T ncomp, L const& f) noexcept
+{
+    ParallelFor(box, ncomp, f);
+}
+
+#else /* !defined(AMREX_USE_GPU) && defined(AMREX_USE_OMP) */
+
+template <typename T, typename L, typename M=std::enable_if_t<std::is_integral_v<T>> >
+AMREX_ATTRIBUTE_FLATTEN_FOR
+void ParallelForOMP (T n, L const& f) noexcept
+{
+#pragma omp parallel for
+    for (T i = 0; i < n; ++i) {
+        f(i);
+    }
+}
+
+template <typename L>
+AMREX_ATTRIBUTE_FLATTEN_FOR
+void ParallelForOMP (Box const& box, L const& f) noexcept
+{
+    auto lo = amrex::lbound(box);
+    auto hi = amrex::ubound(box);
+#if (AMREX_SPACEDIM == 1)
+#pragma omp parallel for
+    for (int i = lo.x; i <= hi.x; ++i) {
+        f(i,0,0);
+    }
+#elif (AMREX_SPACEDIM == 2)
+#pragma omp parallel for
+    for     (int j = lo.y; j <= hi.y; ++j) {
+        AMREX_PRAGMA_SIMD
+        for (int i = lo.x; i <= hi.x; ++i) {
+            f(i,j,0);
+        }
+    }
+#else
+#pragma omp parallel for collapse(2)
+    for         (int k = lo.z; k <= hi.z; ++k) {
+        for     (int j = lo.y; j <= hi.y; ++j) {
+            AMREX_PRAGMA_SIMD
+            for (int i = lo.x; i <= hi.x; ++i) {
+                f(i,j,k);
+            }
+        }
+    }
+#endif
+}
+
+template <typename T, typename L, typename M=std::enable_if_t<std::is_integral_v<T>> >
+AMREX_ATTRIBUTE_FLATTEN_FOR
+void ParallelForOMP (Box const& box, T ncomp, L const& f) noexcept
+{
+    auto lo = amrex::lbound(box);
+    auto hi = amrex::ubound(box);
+#if (AMREX_SPACEDIM == 1)
+#pragma omp parallel for collapse(2)
+    for (T n = 0; n < ncomp; ++n) {
+        for (int i = lo.x; i <= hi.x; ++i) {
+            f(i,0,0,n);
+        }
+    }
+#elif (AMREX_SPACEDIM == 2)
+#pragma omp parallel for collapse(2)
+    for (T n = 0; n < ncomp; ++n) {
+        for     (int j = lo.y; j <= hi.y; ++j) {
+            AMREX_PRAGMA_SIMD
+            for (int i = lo.x; i <= hi.x; ++i) {
+                f(i,j,0,n);
+            }
+        }
+    }
+#else
+#pragma omp parallel for collapse(3)
+    for (T n = 0; n < ncomp; ++n) {
+        for         (int k = lo.z; k <= hi.z; ++k) {
+            for     (int j = lo.y; j <= hi.y; ++j) {
+                AMREX_PRAGMA_SIMD
+                for (int i = lo.x; i <= hi.x; ++i) {
+                    f(i,j,k,n);
+                }
+            }
+        }
+    }
+#endif
+}
+
+#endif
+
+}
 
 #endif

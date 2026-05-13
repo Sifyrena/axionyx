@@ -516,6 +516,24 @@ FaceConservativeLinear::interp_face (const FArrayBox&       crse,
         }
     }
 
+    bool is_safe = true;
+    FArrayBox safe_fine;
+    Array4<Real> safe_fine_arr = fine_arr;
+    Box safe_fine_region = fine_region;
+    int facedir = 0;
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        if (fine_region.type(idim) == IndexType::NODE) { facedir = idim; }
+    }
+    IntVect rrtmp(1);
+    rrtmp[facedir] = ratio[facedir];
+    if (! safe_fine_region.coarsenable(rrtmp)) {
+        is_safe = false;
+        safe_fine_region.coarsen(rrtmp);
+        safe_fine_region.refine(rrtmp);
+        safe_fine.resize(safe_fine_region, ncomp, The_Async_Arena());
+        safe_fine_arr = safe_fine.array();
+    }
+
     //
     // Fill fine ghost faces with interpolation of coarse data that is conservative linear
     //      in the tangential direction.
@@ -525,25 +543,25 @@ FaceConservativeLinear::interp_face (const FArrayBox&       crse,
     //
     if (fine_region.type(0) == IndexType::NODE)
     {
-        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,safe_fine_region,ncomp,i,j,k,n,
         {
-            face_cons_linear_face_interp(i,j,k,n,fine_arr,crse_arr,mask_arr,ratio,per_grown_domain,0);
+            face_cons_linear_face_interp(i,j,k,n,safe_fine_arr,crse_arr,mask_arr,ratio,per_grown_domain,0);
         });
     }
 #if (AMREX_SPACEDIM >= 2)
     else if (fine_region.type(1) == IndexType::NODE)
     {
-        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,safe_fine_region,ncomp,i,j,k,n,
         {
-            face_cons_linear_face_interp(i,j,k,n,fine_arr,crse_arr,mask_arr,ratio,per_grown_domain,1);
+            face_cons_linear_face_interp(i,j,k,n,safe_fine_arr,crse_arr,mask_arr,ratio,per_grown_domain,1);
         });
     }
 #if (AMREX_SPACEDIM == 3)
     else
     {
-        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,safe_fine_region,ncomp,i,j,k,n,
         {
-            face_cons_linear_face_interp(i,j,k,n,fine_arr,crse_arr,mask_arr,ratio,per_grown_domain,2);
+            face_cons_linear_face_interp(i,j,k,n,safe_fine_arr,crse_arr,mask_arr,ratio,per_grown_domain,2);
         });
     }
 #endif
@@ -556,26 +574,47 @@ FaceConservativeLinear::interp_face (const FArrayBox&       crse,
     //
     if (fine_region.type(0) == IndexType::NODE)
     {
-        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
-        {
-            face_linear_interp_x(i,j,k,n,fine_arr,ratio);
-        });
+        if (is_safe) {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+            {
+                face_linear_interp_x(i,j,k,n,fine_arr,ratio);
+            });
+        } else {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+            {
+                fine_arr(i,j,k,n) = face_linear_interp_safe_x(i,j,k,n,safe_fine_arr,ratio);
+            });
+        }
     }
 #if (AMREX_SPACEDIM >= 2)
     else if (fine_region.type(1) == IndexType::NODE)
     {
-        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
-        {
-            face_linear_interp_y(i,j,k,n,fine_arr,ratio);
-        });
+        if (is_safe) {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+            {
+                face_linear_interp_y(i,j,k,n,fine_arr,ratio);
+            });
+        } else {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+            {
+                fine_arr(i,j,k,n) = face_linear_interp_safe_y(i,j,k,n,safe_fine_arr,ratio);
+            });
+        }
     }
 #if (AMREX_SPACEDIM == 3)
     else
     {
-        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
-        {
-            face_linear_interp_z(i,j,k,n,fine_arr,ratio);
-        });
+        if (is_safe) {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+            {
+                face_linear_interp_z(i,j,k,n,fine_arr,ratio);
+            });
+        } else {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,fine_region,ncomp,i,j,k,n,
+            {
+                fine_arr(i,j,k,n) = face_linear_interp_safe_z(i,j,k,n,safe_fine_arr,ratio);
+            });
+        }
     }
 #endif
 #endif
@@ -868,7 +907,33 @@ CellConservativeLinear::interp (const FArrayBox& crse,
         });
     } else
 #elif (AMREX_SPACEDIM == 2)
-    if (crse_geom.IsRZ()) {
+    if (crse_geom.IsSPHERICAL()) {
+        Real drf = fine_geom.CellSize(0);
+        Real dtf = fine_geom.CellSize(1);
+        Real rlo = fine_geom.Offset(0);
+        Real tlo = fine_geom.Offset(1);
+        if (do_linear_limiting) {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_3D_FLAG(runon, cslope_bx, i, j, k,
+            {
+                mf_cell_cons_lin_interp_llslope(i,j,k, tmp, crsearr, crse_comp, ncomp,
+                                                cdomain, ratio, bcrp);
+            });
+        } else {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon, cslope_bx, ncomp, i, j, k, n,
+            {
+                amrex::ignore_unused(k);
+                mf_cell_cons_lin_interp_mcslope_sph(i, j, n, tmp, crsearr, crse_comp, ncomp,
+                                                    cdomain, ratio, bcrp, drf, rlo, dtf, tlo);
+            });
+        }
+
+        AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon, fine_region, ncomp, i, j, k, n,
+        {
+            amrex::ignore_unused(k);
+            mf_cell_cons_lin_interp_sph(i, j, n, finearr, fine_comp, ctmp, crsearr, crse_comp,
+                                        ncomp, ratio, drf, rlo, dtf, tlo);
+        });
+    } else if (crse_geom.IsRZ()) {
         Real drf = fine_geom.CellSize(0);
         Real rlo = fine_geom.Offset(0);
         if (do_linear_limiting) {
@@ -1280,7 +1345,7 @@ FaceDivFree::interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
                          const int         /*actual_state*/,
                          const RunOn       runon)
 {
-    BL_PROFILE("FaceDivFree::interp()");
+    BL_PROFILE("FaceDivFree::interp_arr()");
 
     Array<IndexType, AMREX_SPACEDIM> types;
     for (int d=0; d<AMREX_SPACEDIM; ++d)
@@ -1311,7 +1376,7 @@ FaceDivFree::interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
                   {
                       for (int n=0; n<ncomp; ++n)
                       {
-                          amrex::facediv_face_interp<Real> (i,j,k,crse_comp+n,fine_comp+n, 0,
+                          amrex::facediv_face_interp<Real> (i,j,k,n,0,
                                                             crsearr[0], finearr[0], maskarr[0], ratio);
                       }
                   });
@@ -1322,7 +1387,7 @@ FaceDivFree::interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
                   {
                       for (int n=0; n<ncomp; ++n)
                       {
-                          amrex::facediv_face_interp<Real> (i,j,k,crse_comp+n,fine_comp+n, 1,
+                          amrex::facediv_face_interp<Real> (i,j,k,n,1,
                                                             crsearr[1], finearr[1], maskarr[1], ratio);
                       }
                   });
@@ -1333,7 +1398,7 @@ FaceDivFree::interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
                   {
                       for (int n=0; n<ncomp; ++n)
                       {
-                          amrex::facediv_face_interp<Real> (i,j,k,crse_comp+n,fine_comp+n, 2,
+                          amrex::facediv_face_interp<Real> (i,j,k,n,2,
                                                             crsearr[2], finearr[2], maskarr[2], ratio);
                       }
                   });
@@ -1341,7 +1406,7 @@ FaceDivFree::interp_arr (Array<FArrayBox*, AMREX_SPACEDIM> const& crse,
 
     AMREX_HOST_DEVICE_PARALLEL_FOR_4D_FLAG(runon,c_fine_region,ncomp,i,j,k,n,
     {
-        amrex::facediv_int<Real>(i, j, k, fine_comp+n, finearr, ratio, cell_size);
+        amrex::facediv_int<Real>(i, j, k, n, finearr, ratio, cell_size);
     });
 }
 

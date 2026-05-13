@@ -11,6 +11,7 @@
 #include <AMReX_RealVect.H>
 
 #include <array>
+#include <atomic>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -27,6 +28,7 @@ struct SoAParticle;
 template <typename T_ParticleType, int NArrayReal, int NArrayInt>
 struct ConstParticleTileData;
 
+/// \ingroup amrex_particles
 template <typename T_ParticleType, int NArrayReal, int NArrayInt>
 struct ParticleTileData
 {
@@ -36,6 +38,8 @@ struct ParticleTileData
     using ParticleType = T_ParticleType;
     using ParticleRefType = T_ParticleType&;
     using Self = ParticleTileData<ParticleType, NAR, NAI>;
+    using RealType = ParticleReal;
+    using IntType = int;
 
     static constexpr int NStructReal = ParticleType::NReal;
     static constexpr int NStructInt = ParticleType::NInt;
@@ -60,7 +64,7 @@ struct ParticleTileData
     int* AMREX_RESTRICT * AMREX_RESTRICT m_runtime_idata;
 
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-    ParticleReal& pos (const int dir, const int index) const &
+    decltype(auto) pos (const int dir, const int index) const &
     {
         if constexpr(!ParticleType::is_soa_particle) {
             return this->m_aos[index].pos(dir);
@@ -95,7 +99,7 @@ struct ParticleTileData
         if constexpr(ParticleType::is_soa_particle) {
             return this->m_idcpu[index];
         } else {
-            amrex::Abort("not implemented");
+            return this->m_aos[index].idcpu();
         }
     }
 
@@ -192,12 +196,14 @@ struct ParticleTileData
         if constexpr (!ParticleType::is_soa_particle) {
             array_start_index = AMREX_SPACEDIM + NStructReal;
         }
-        for (int i = 0; i < NAR; ++i)
-        {
-            if (comm_real[array_start_index + i])
+        if constexpr (NAR > 0) {
+            for (int i = 0; i < NAR; ++i)
             {
-                memcpy(m_rdata[i] + dst_index, src, sizeof(ParticleReal));
-                src += sizeof(ParticleReal);
+                if (comm_real[array_start_index + i])
+                {
+                    memcpy(m_rdata[i] + dst_index, src, sizeof(ParticleReal));
+                    src += sizeof(ParticleReal);
+                }
             }
         }
         int runtime_start_index  = array_start_index + NAR;
@@ -210,12 +216,14 @@ struct ParticleTileData
             }
         }
         array_start_index  = 2 + NStructInt;
-        for (int i = 0; i < NAI; ++i)
-        {
-            if (comm_int[array_start_index + i])
+        if constexpr (NAI > 0) {
+            for (int i = 0; i < NAI; ++i)
             {
-                memcpy(m_idata[i] + dst_index, src, sizeof(int));
-                src += sizeof(int);
+                if (comm_int[array_start_index + i])
+                {
+                    memcpy(m_idata[i] + dst_index, src, sizeof(int));
+                    src += sizeof(int);
+                }
             }
         }
         runtime_start_index  = 2 + NStructInt + NAI;
@@ -241,16 +249,20 @@ struct ParticleTileData
         for (int i = 0; i < NStructReal; ++i) {
             sp.rdata(i) = m_aos[index].rdata(i);
         }
-        for (int i = 0; i < NAR; ++i) {
-            sp.rdata(NStructReal+i) = m_rdata[i][index];
+        if constexpr (NAR >0) {
+            for (int i = 0; i < NAR; ++i) {
+                sp.rdata(NStructReal+i) = m_rdata[i][index];
+            }
         }
         sp.id() = m_aos[index].id();
         sp.cpu() = m_aos[index].cpu();
         for (int i = 0; i < NStructInt; ++i) {
             sp.idata(i) = m_aos[index].idata(i);
         }
-        for (int i = 0; i < NAI; ++i) {
-            sp.idata(NStructInt+i) = m_idata[i][index];
+        if constexpr (NAI > 0) {
+            for (int i = 0; i < NAI; ++i) {
+                sp.idata(NStructInt+i) = m_idata[i][index];
+            }
         }
         return sp;
     }
@@ -318,9 +330,11 @@ struct alignas(sizeof(double)) ConstSoAParticle : SoAParticleBase
     using StorageParticleType = SoAParticleBase;
     using ConstPTD = ConstParticleTileData<SoAParticleBase, NArrayReal, NArrayInt>;
     static constexpr bool is_soa_particle = true;
+    static constexpr bool is_rtsoa_particle = false;
     static constexpr bool is_constsoa_particle = true;
 
     using RealType = ParticleReal;
+    using IntType = int;
 
     AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
     ConstSoAParticle (ConstPTD const& ptd, long i) : // Note: should this be int instead?
@@ -366,7 +380,7 @@ struct alignas(sizeof(double)) ConstSoAParticle : SoAParticleBase
 
     private :
 
-    static_assert(std::is_trivially_copyable<ParticleTileData<SoAParticleBase, NArrayReal, NArrayInt>>(), "ParticleTileData is not trivially copyable");
+    static_assert(std::is_trivially_copyable<ConstPTD>(), "ParticleTileData is not trivially copyable");
 
     ConstPTD m_constparticle_tile_data;
     int m_index;
@@ -380,10 +394,12 @@ struct alignas(sizeof(double)) SoAParticle : SoAParticleBase
     using StorageParticleType = SoAParticleBase;
     using PTD = ParticleTileData<SoAParticleBase, NArrayReal, NArrayInt>;
     static constexpr bool is_soa_particle = true;
+    static constexpr bool is_rtsoa_particle = false;
     static constexpr bool is_constsoa_particle = false;
 
     using ConstType = ConstSoAParticle<T_NArrayReal, T_NArrayInt>;
     using RealType = ParticleReal;
+    using IntType = int;
 
     AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
     SoAParticle (PTD const& ptd, long i) : // Note: should this be int instead?
@@ -399,7 +415,7 @@ struct alignas(sizeof(double)) SoAParticle : SoAParticleBase
     ParticleCPUWrapper cpu () & { return this->m_particle_tile_data.m_idcpu[m_index]; }
 
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-    ParticleIDWrapper id () & { return this->m_particle_tile_data.m_idcpu[m_index]; }
+    ParticleIDWrapper<> id () & { return this->m_particle_tile_data.m_idcpu[m_index]; }
 
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
     uint64_t& idcpu () & { return this->m_particle_tile_data.m_idcpu[m_index]; }
@@ -448,7 +464,7 @@ struct alignas(sizeof(double)) SoAParticle : SoAParticleBase
 
 private :
 
-    static_assert(std::is_trivially_copyable<ParticleTileData<SoAParticleBase, NArrayReal, NArrayInt>>(), "ParticleTileData is not trivially copyable");
+    static_assert(std::is_trivially_copyable<PTD>(), "ParticleTileData is not trivially copyable");
 
     PTD m_particle_tile_data;
     int m_index;
@@ -503,6 +519,8 @@ struct ConstParticleTileData
     static constexpr int NAI = NArrayInt;
     using ParticleType = T_ParticleType;
     using ParticleRefType = T_ParticleType const&;
+    using RealType = ParticleReal;
+    using IntType = int;
 
     static constexpr int NStructReal = ParticleType::NReal;
     static constexpr int NStructInt = ParticleType::NInt;
@@ -522,7 +540,7 @@ struct ConstParticleTileData
     GpuArray<const int*, NArrayInt > m_idata;
 
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-    const ParticleReal& pos (const int dir, const int index) const &
+    decltype(auto) pos (const int dir, const int index) const &
     {
         if constexpr(!ParticleType::is_soa_particle) {
             return this->m_aos[index].pos(dir);
@@ -557,7 +575,7 @@ struct ConstParticleTileData
         if constexpr(ParticleType::is_soa_particle) {
             return this->m_idcpu[index];
         } else {
-            amrex::Abort("not implemented");
+            return this->m_aos[index].idcpu();
         }
     }
 
@@ -605,12 +623,14 @@ struct ConstParticleTileData
         if constexpr (!ParticleType::is_soa_particle) {
             array_start_index = AMREX_SPACEDIM + NStructReal;
         }
-        for (int i = 0; i < NArrayReal; ++i)
-        {
-            if (comm_real[array_start_index + i])
+        if constexpr (NArrayReal > 0) {
+            for (int i = 0; i < NArrayReal; ++i)
             {
-                memcpy(dst, m_rdata[i] + src_index, sizeof(ParticleReal));
-                dst += sizeof(ParticleReal);
+                if (comm_real[array_start_index + i])
+                {
+                    memcpy(dst, m_rdata[i] + src_index, sizeof(ParticleReal));
+                    dst += sizeof(ParticleReal);
+                }
             }
         }
         int runtime_start_index  = array_start_index + NArrayReal;
@@ -623,12 +643,14 @@ struct ConstParticleTileData
             }
         }
         array_start_index  = 2 + NStructInt;
-        for (int i = 0; i < NArrayInt; ++i)
-        {
-            if (comm_int[array_start_index + i])
+        if constexpr (NArrayInt > 0) {
+            for (int i = 0; i < NArrayInt; ++i)
             {
-                memcpy(dst, m_idata[i] + src_index, sizeof(int));
-                dst += sizeof(int);
+                if (comm_int[array_start_index + i])
+                {
+                    memcpy(dst, m_idata[i] + src_index, sizeof(int));
+                    dst += sizeof(int);
+                }
             }
         }
         runtime_start_index  = 2 + NStructInt + NArrayInt;
@@ -696,6 +718,46 @@ struct ThisParticleTileHasNoAoS {
     using ParticleVector = ThisParticleTileHasNoParticleVector;
 };
 
+struct RuntimePtrCacheDirtyFlag
+{
+    RuntimePtrCacheDirtyFlag () noexcept = default;
+
+    ~RuntimePtrCacheDirtyFlag () = default;
+
+    RuntimePtrCacheDirtyFlag (RuntimePtrCacheDirtyFlag const&) noexcept
+        : m_value(true)
+    {}
+
+    RuntimePtrCacheDirtyFlag (RuntimePtrCacheDirtyFlag&&) noexcept
+        : m_value(true)
+    {}
+
+    RuntimePtrCacheDirtyFlag& operator= (RuntimePtrCacheDirtyFlag const&) noexcept
+    {
+        m_value.store(true, std::memory_order_relaxed);
+        return *this;
+    }
+
+    RuntimePtrCacheDirtyFlag& operator= (RuntimePtrCacheDirtyFlag&&) noexcept
+    {
+        m_value.store(true, std::memory_order_relaxed);
+        return *this;
+    }
+
+    void store (bool value, std::memory_order order = std::memory_order_seq_cst) noexcept
+    {
+        m_value.store(value, order);
+    }
+
+    [[nodiscard]] bool load (std::memory_order order = std::memory_order_seq_cst) const noexcept
+    {
+        return m_value.load(order);
+    }
+
+private:
+    std::atomic<bool> m_value {true};
+};
+
 template <typename T_ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator=DefaultAllocator>
 struct ParticleTile
@@ -717,7 +779,7 @@ struct ParticleTile
         ParticleType::is_soa_particle,
         ThisParticleTileHasNoAoS,
         ArrayOfStructs<ParticleType, Allocator>>;
-    //using ParticleVector = typename AoS::ParticleVector;
+    using ParticleVector = typename AoS::ParticleVector;
 
     using SoA = std::conditional_t<
         ParticleType::is_soa_particle,
@@ -729,6 +791,9 @@ struct ParticleTile
 
     using ParticleTileDataType = ParticleTileData<StorageParticleType, NArrayReal, NArrayInt>;
     using ConstParticleTileDataType = ConstParticleTileData<StorageParticleType, NArrayReal, NArrayInt>;
+
+    static constexpr bool has_polymorphic_allocator =
+        IsPolymorphicArenaAllocator<Allocator<RealType>>::value;
 
     ParticleTile () = default;
 
@@ -746,15 +811,52 @@ struct ParticleTile
         int a_num_runtime_real,
         int a_num_runtime_int,
         std::vector<std::string>* soa_rdata_names=nullptr,
-        std::vector<std::string>* soa_idata_names=nullptr
+        std::vector<std::string>* soa_idata_names=nullptr,
+        Arena* a_arena=nullptr
     )
     {
-        m_defined = true;
         GetStructOfArrays().define(a_num_runtime_real, a_num_runtime_int, soa_rdata_names, soa_idata_names);
         m_runtime_r_ptrs.resize(a_num_runtime_real);
         m_runtime_i_ptrs.resize(a_num_runtime_int);
         m_runtime_r_cptrs.resize(a_num_runtime_real);
         m_runtime_i_cptrs.resize(a_num_runtime_int);
+
+        if constexpr (has_polymorphic_allocator) {
+            if (m_defined) {
+                // it is not allowed to change the arena after the tile has been defined
+                if constexpr (ParticleType::is_soa_particle) {
+                    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                        a_arena == GetStructOfArrays().GetIdCPUData().arena(),
+                        "ParticleTile with PolymorphicArenaAllocator redefined with "
+                        "different memory arena");
+                } else {
+                    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                        a_arena == m_aos_tile().arena(),
+                        "ParticleTile with PolymorphicArenaAllocator redefined with "
+                        "different memory arena");
+                }
+            }
+
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(a_arena != nullptr,
+                "ParticleTile with PolymorphicArenaAllocator defined with no memory arena! "
+                "Make sure to call setArena() on the ParticleContainer before initialization or "
+                "to pass an Arena to ParticleTile::define()");
+
+            if constexpr (ParticleType::is_soa_particle) {
+                GetStructOfArrays().GetIdCPUData().setArena(a_arena);
+            } else {
+                m_aos_tile().setArena(a_arena);
+            }
+            for (int j = 0; j < NumRealComps(); ++j) {
+                GetStructOfArrays().GetRealData(j).setArena(a_arena);
+            }
+            for (int j = 0; j < NumIntComps(); ++j) {
+                GetStructOfArrays().GetIntData(j).setArena(a_arena);
+            }
+        }
+
+        m_defined = true;
+        invalidateRuntimePtrCaches();
     }
 
     // Get id data
@@ -817,10 +919,10 @@ struct ParticleTile
         }
     }
 
-    AoS&       GetArrayOfStructs ()       { return m_aos_tile; }
+    AoS&       GetArrayOfStructs ()       { invalidateRuntimePtrCaches(); return m_aos_tile; }
     const AoS& GetArrayOfStructs () const { return m_aos_tile; }
 
-    SoA&       GetStructOfArrays ()       { return m_soa_tile; }
+    SoA&       GetStructOfArrays ()       { invalidateRuntimePtrCaches(); return m_soa_tile; }
     const SoA& GetStructOfArrays () const { return m_soa_tile; }
 
     bool empty () const { return size() == 0; }
@@ -892,6 +994,7 @@ struct ParticleTile
 
     void setNumNeighbors (int num_neighbors)
     {
+        invalidateRuntimePtrCaches();
         if constexpr(!ParticleType::is_soa_particle) {
             m_aos_tile.setNumNeighbors(num_neighbors);
         }
@@ -908,19 +1011,33 @@ struct ParticleTile
         }
     }
 
-    void resize (std::size_t count)
+    void resize (std::size_t count, GrowthStrategy strategy = GrowthStrategy::Poisson)
     {
+        invalidateRuntimePtrCaches();
         if constexpr (!ParticleType::is_soa_particle) {
-            m_aos_tile.resize(count);
+            m_aos_tile.resize(count, strategy);
         }
-        m_soa_tile.resize(count);
+        m_soa_tile.resize(count, strategy);
+    }
+
+    void reserve (std::size_t capacity, GrowthStrategy strategy = GrowthStrategy::Poisson)
+    {
+        invalidateRuntimePtrCaches();
+        if constexpr (!ParticleType::is_soa_particle) {
+            m_aos_tile.reserve(capacity, strategy);
+        }
+        m_soa_tile.reserve(capacity, strategy);
     }
 
     ///
     /// Add one particle to this tile.
     ///
     template <typename T = ParticleType, std::enable_if_t<!T::is_soa_particle, int> = 0>
-    void push_back (const ParticleType& p) { m_aos_tile().push_back(p); }
+    void push_back (const ParticleType& p)
+    {
+        invalidateRuntimePtrCaches();
+        m_aos_tile().push_back(p);
+    }
 
     ///
     /// Add one particle to this tile.
@@ -929,6 +1046,7 @@ struct ParticleTile
                std::enable_if_t<NR != 0 || NI != 0, int> foo = 0>
     void push_back (const SuperParticleType& sp)
     {
+        invalidateRuntimePtrCaches();
         auto np = numParticles();
 
         if constexpr (!ParticleType::is_soa_particle) {
@@ -965,6 +1083,7 @@ struct ParticleTile
     /// This sets the data for one particle.
     ///
     void push_back_real (int comp, ParticleReal v) {
+        invalidateRuntimePtrCaches();
         m_soa_tile.GetRealData(comp).push_back(v);
     }
 
@@ -983,6 +1102,7 @@ struct ParticleTile
     /// This sets the data for several particles at once.
     ///
     void push_back_real (int comp, const ParticleReal* beg, const ParticleReal* end) {
+        invalidateRuntimePtrCaches();
         auto it = m_soa_tile.GetRealData(comp).end();
         m_soa_tile.GetRealData(comp).insert(it, beg, end);
     }
@@ -1008,6 +1128,7 @@ struct ParticleTile
     /// This sets the data for several particles at once.
     ///
     void push_back_real (int comp, std::size_t npar, ParticleReal v) {
+        invalidateRuntimePtrCaches();
         auto new_size = m_soa_tile.GetRealData(comp).size() + npar;
         m_soa_tile.GetRealData(comp).resize(new_size, v);
     }
@@ -1017,6 +1138,7 @@ struct ParticleTile
     /// This sets the data for one particle.
     ///
     void push_back_int (int comp, int v) {
+        invalidateRuntimePtrCaches();
         m_soa_tile.GetIntData(comp).push_back(v);
     }
 
@@ -1035,6 +1157,7 @@ struct ParticleTile
     /// This sets the data for several particles at once.
     ///
     void push_back_int (int comp, const int* beg, const int* end) {
+        invalidateRuntimePtrCaches();
         auto it = m_soa_tile.GetIntData(comp).end();
         m_soa_tile.GetIntData(comp).insert(it, beg, end);
     }
@@ -1060,6 +1183,7 @@ struct ParticleTile
     /// This sets the data for several particles at once.
     ///
     void push_back_int (int comp, std::size_t npar, int v) {
+        invalidateRuntimePtrCaches();
         auto new_size = m_soa_tile.GetIntData(comp).size() + npar;
         m_soa_tile.GetIntData(comp).resize(new_size, v);
     }
@@ -1074,6 +1198,7 @@ struct ParticleTile
 
     void shrink_to_fit ()
     {
+        invalidateRuntimePtrCaches();
         if constexpr (ParticleType::is_soa_particle) {
             GetStructOfArrays().GetIdCPUData().shrink_to_fit();
         } else {
@@ -1132,47 +1257,13 @@ struct ParticleTile
             auto& idata = GetStructOfArrays().GetIntData(j);
             idata.swap(other.GetStructOfArrays().GetIntData(j));
         }
+        invalidateRuntimePtrCaches();
+        other.invalidateRuntimePtrCaches();
     }
 
     ParticleTileDataType getParticleTileData ()
     {
-        m_runtime_r_ptrs.resize(m_soa_tile.NumRealComps() - NArrayReal);
-        m_runtime_i_ptrs.resize(m_soa_tile.NumIntComps() - NArrayInt);
-#ifdef AMREX_USE_GPU
-        bool copy_real = false;
-        m_h_runtime_r_ptrs.resize(m_soa_tile.NumRealComps() - NArrayReal, nullptr);
-        for (std::size_t i = 0; i < m_h_runtime_r_ptrs.size(); ++i) {
-            if (m_h_runtime_r_ptrs[i] != m_soa_tile.GetRealData(i + NArrayReal).dataPtr()) {
-                m_h_runtime_r_ptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
-                copy_real = true;
-            }
-        }
-        if (copy_real) {
-            Gpu::htod_memcpy_async(m_runtime_r_ptrs.data(), m_h_runtime_r_ptrs.data(),
-                                   m_h_runtime_r_ptrs.size()*sizeof(ParticleReal*));
-        }
-
-        bool copy_int = false;
-        m_h_runtime_i_ptrs.resize(m_soa_tile.NumIntComps() - NArrayInt, nullptr);
-        for (std::size_t i = 0; i < m_h_runtime_i_ptrs.size(); ++i) {
-            if (m_h_runtime_i_ptrs[i] != m_soa_tile.GetIntData(i + NArrayInt).dataPtr()) {
-                m_h_runtime_i_ptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
-                copy_int = true;
-            }
-        }
-        if (copy_int) {
-            Gpu::htod_memcpy_async(m_runtime_i_ptrs.data(), m_h_runtime_i_ptrs.data(),
-                                   m_h_runtime_i_ptrs.size()*sizeof(int*));
-        }
-#else
-        for (std::size_t i = 0; i < m_runtime_r_ptrs.size(); ++i) {
-            m_runtime_r_ptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
-        }
-
-        for (std::size_t i = 0; i < m_runtime_i_ptrs.size(); ++i) {
-            m_runtime_i_ptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
-        }
-#endif
+        refreshRuntimePtrCaches();
 
         ParticleTileDataType ptd;
         if constexpr (!ParticleType::is_soa_particle) {
@@ -1201,54 +1292,12 @@ struct ParticleTile
         ptd.m_runtime_rdata = m_runtime_r_ptrs.dataPtr();
         ptd.m_runtime_idata = m_runtime_i_ptrs.dataPtr();
 
-#ifdef AMREX_USE_GPU
-        if (copy_real || copy_int) {
-            Gpu::streamSynchronize();
-        }
-#endif
-
         return ptd;
     }
 
     ConstParticleTileDataType getConstParticleTileData () const
     {
-        m_runtime_r_cptrs.resize(m_soa_tile.NumRealComps() - NArrayReal);
-        m_runtime_i_cptrs.resize(m_soa_tile.NumIntComps() - NArrayInt);
-#ifdef AMREX_USE_GPU
-        bool copy_real = false;
-        m_h_runtime_r_cptrs.resize(m_soa_tile.NumRealComps() - NArrayReal, nullptr);
-        for (std::size_t i = 0; i < m_h_runtime_r_cptrs.size(); ++i) {
-            if (m_h_runtime_r_cptrs[i] != m_soa_tile.GetRealData(i + NArrayReal).dataPtr()) {
-                m_h_runtime_r_cptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
-                copy_real = true;
-            }
-        }
-        if (copy_real) {
-            Gpu::htod_memcpy_async(m_runtime_r_cptrs.data(), m_h_runtime_r_cptrs.data(),
-                                   m_h_runtime_r_cptrs.size()*sizeof(ParticleReal*));
-        }
-
-        bool copy_int = false;
-        m_h_runtime_i_cptrs.resize(m_soa_tile.NumIntComps() - NArrayInt, nullptr);
-        for (std::size_t i = 0; i < m_h_runtime_i_cptrs.size(); ++i) {
-            if (m_h_runtime_i_cptrs[i] != m_soa_tile.GetIntData(i + NArrayInt).dataPtr()) {
-                m_h_runtime_i_cptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
-                copy_int = true;
-            }
-        }
-        if (copy_int) {
-            Gpu::htod_memcpy_async(m_runtime_i_cptrs.data(), m_h_runtime_i_cptrs.data(),
-                                   m_h_runtime_i_cptrs.size()*sizeof(int*));
-        }
-#else
-        for (std::size_t i = 0; i < m_runtime_r_cptrs.size(); ++i) {
-            m_runtime_r_cptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
-        }
-
-        for (std::size_t i = 0; i < m_runtime_i_cptrs.size(); ++i) {
-            m_runtime_i_cptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
-        }
-#endif
+        refreshConstRuntimePtrCaches();
 
         ConstParticleTileDataType ptd;
         if constexpr (!ParticleType::is_soa_particle) {
@@ -1277,16 +1326,256 @@ struct ParticleTile
         ptd.m_runtime_rdata = m_runtime_r_cptrs.dataPtr();
         ptd.m_runtime_idata = m_runtime_i_cptrs.dataPtr();
 
-#ifdef AMREX_USE_GPU
-        if (copy_real || copy_int) {
-            Gpu::streamSynchronize();
-        }
-#endif
-
         return ptd;
     }
 
+    void collectVectors (Vector<ParticleVector*>& pv,
+                         Vector<typename SoA::IdCPU*>& idcpuv,
+                         Vector<RealVector*>& rv, Vector<IntVector*>& iv)
+    {
+        invalidateRuntimePtrCaches();
+        if constexpr (!ParticleType::is_soa_particle) {
+            m_aos_tile.collectVectors(pv);
+        } else {
+            amrex::ignore_unused(pv);
+        }
+        m_soa_tile.collectVectors(idcpuv, rv, iv);
+    }
+
+    static void reserve (std::map<ParticleTile<T_ParticleType,NArrayReal,NArrayInt,Allocator>*, int> const& addsizes)
+    {
+        if constexpr (!IsArenaAllocator<Allocator<int>>::value) {
+            for (auto [p,s] : addsizes) {
+                p->reserve(p->size()+s);
+            }
+        } else {
+            using PV = std::conditional_t<ParticleType::is_soa_particle,
+                                          IntVector, ParticleVector>;
+            Vector<std::pair<PV*,int>> pvs;
+            Vector<std::pair<typename SoA::IdCPU*,int>> ids;
+            Vector<std::pair<RealVector*,int>> rvs;
+            Vector<std::pair<IntVector*,int>> ivs;
+            for (auto [p,s] : addsizes) {
+                if (s > 0) {
+                    Vector<ParticleVector*> pv;
+                    Vector<typename SoA::IdCPU*> idcpuv;
+                    Vector<RealVector*> rv;
+                    Vector<IntVector*> iv;
+                    p->collectVectors(pv, idcpuv, rv, iv);
+                    if constexpr (!ParticleType::is_soa_particle) {
+                        for (auto* v : pv) {
+                            pvs.emplace_back(v, s);
+                        }
+                    }
+                    for (auto* v : idcpuv) {
+                        ids.emplace_back(v, s);
+                    }
+                    for (auto* v : rv) {
+                        rvs.emplace_back(v, s);
+                    }
+                    for (auto* v : iv) {
+                        ivs.emplace_back(v, s);
+                    }
+                }
+            }
+
+            std::sort(pvs.begin(), pvs.end(), [] (auto const& a, auto const& b) {
+                return (a.first->size() + a.second) >
+                       (b.first->size() + b.second);
+            });
+            std::sort(ids.begin(), ids.end(), [] (auto const& a, auto const& b) {
+                return (a.first->size() + a.second) >
+                       (b.first->size() + b.second);
+            });
+            std::sort(rvs.begin(), rvs.end(), [] (auto const& a, auto const& b) {
+                return (a.first->size() + a.second) >
+                       (b.first->size() + b.second);
+            });
+            std::sort(ivs.begin(), ivs.end(), [] (auto const& a, auto const& b) {
+                return (a.first->size() + a.second) >
+                       (b.first->size() + b.second);
+            });
+
+            // Handle big vectors first
+            {
+                int i_pvs = 0, i_ids = 0, i_rvs = 0, i_ivs = 0;
+                auto n_pvs = int(pvs.size());
+                auto n_ids = int(ids.size());
+                auto n_rvs = int(rvs.size());
+                auto n_ivs = int(ivs.size());
+                while ((i_pvs < n_pvs) || (i_ids < n_ids) || (i_rvs < n_rvs) ||
+                       (i_ivs < n_ivs)) {
+                    std::size_t nbytes = 0;
+                    int ii = -1;
+                    if (i_pvs < n_pvs) {
+                        std::size_t my_bytes = (pvs[i_pvs].first->size()
+                                              + pvs[i_pvs].second) * sizeof(typename PV::value_type);
+                        if (my_bytes > nbytes) {
+                            nbytes = my_bytes;
+                            ii = 0;
+                        }
+                    }
+                    if (i_ids < n_ids) {
+                        std::size_t my_bytes = (ids[i_ids].first->size()
+                                              + ids[i_ids].second) * sizeof(typename SoA::IdCPU::value_type);
+                        if (my_bytes > nbytes) {
+                            nbytes = my_bytes;
+                            ii = 1;
+                        }
+                    }
+                    if (i_rvs < n_rvs) {
+                        std::size_t my_bytes = (rvs[i_rvs].first->size()
+                                              + rvs[i_rvs].second) * sizeof(typename RealVector::value_type);
+                        if (my_bytes > nbytes) {
+                            nbytes = my_bytes;
+                            ii = 2;
+                        }
+                    }
+                    if (i_ivs < n_ivs) {
+                        std::size_t my_bytes = (ivs[i_ivs].first->size()
+                                              + ivs[i_ivs].second) * sizeof(typename IntVector::value_type);
+                        if (my_bytes > nbytes) {
+                            nbytes = my_bytes;
+                            ii = 3;
+                        }
+                    }
+                    if (ii == 0) {
+                        auto [p,s] = pvs[i_pvs++];
+                        p->reserve(p->size() + s);
+                    } else if (ii == 1) {
+                        auto [p,s] = ids[i_ids++];
+                        p->reserve(p->size() + s);
+                    } else if (ii == 2) {
+                        auto [p,s] = rvs[i_rvs++];
+                        p->reserve(p->size() + s);
+                    } else {
+                        auto [p,s] = ivs[i_ivs++];
+                        p->reserve(p->size() + s);
+                    }
+                }
+            }
+        }
+    }
+
 private:
+
+    void invalidateRuntimePtrCaches () noexcept
+    {
+        m_runtime_ptrs_dirty.store(true, std::memory_order_release);
+        m_runtime_cptrs_dirty.store(true, std::memory_order_release);
+    }
+
+    void refreshRuntimePtrCaches ()
+    {
+        if (!m_runtime_ptrs_dirty.load(std::memory_order_acquire)) {
+            return;
+        }
+#if defined(AMREX_USE_OMP)
+#pragma omp critical (amrex_particle_tile_data_cache)
+#endif
+        {
+            if (m_runtime_ptrs_dirty.load(std::memory_order_relaxed)) {
+                m_runtime_r_ptrs.resize(m_soa_tile.NumRealComps() - NArrayReal);
+                m_runtime_i_ptrs.resize(m_soa_tile.NumIntComps() - NArrayInt);
+#ifdef AMREX_USE_GPU
+                bool copy_real = false;
+                m_h_runtime_r_ptrs.resize(m_soa_tile.NumRealComps() - NArrayReal, nullptr);
+                for (std::size_t i = 0; i < m_h_runtime_r_ptrs.size(); ++i) {
+                    if (m_h_runtime_r_ptrs[i] != m_soa_tile.GetRealData(i + NArrayReal).dataPtr()) {
+                        m_h_runtime_r_ptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
+                        copy_real = true;
+                    }
+                }
+                if (copy_real) {
+                    Gpu::htod_memcpy_async(m_runtime_r_ptrs.data(), m_h_runtime_r_ptrs.data(),
+                                           m_h_runtime_r_ptrs.size()*sizeof(ParticleReal*));
+                }
+
+                bool copy_int = false;
+                m_h_runtime_i_ptrs.resize(m_soa_tile.NumIntComps() - NArrayInt, nullptr);
+                for (std::size_t i = 0; i < m_h_runtime_i_ptrs.size(); ++i) {
+                    if (m_h_runtime_i_ptrs[i] != m_soa_tile.GetIntData(i + NArrayInt).dataPtr()) {
+                        m_h_runtime_i_ptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
+                        copy_int = true;
+                    }
+                }
+                if (copy_int) {
+                    Gpu::htod_memcpy_async(m_runtime_i_ptrs.data(), m_h_runtime_i_ptrs.data(),
+                                           m_h_runtime_i_ptrs.size()*sizeof(int*));
+                }
+
+                if (copy_real || copy_int) {
+                    Gpu::streamSynchronize();
+                }
+#else
+                for (std::size_t i = 0; i < m_runtime_r_ptrs.size(); ++i) {
+                    m_runtime_r_ptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
+                }
+
+                for (std::size_t i = 0; i < m_runtime_i_ptrs.size(); ++i) {
+                    m_runtime_i_ptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
+                }
+#endif
+                m_runtime_ptrs_dirty.store(false, std::memory_order_release);
+            }
+        }
+    }
+
+    void refreshConstRuntimePtrCaches () const
+    {
+        if (!m_runtime_cptrs_dirty.load(std::memory_order_acquire)) {
+            return;
+        }
+#if defined(AMREX_USE_OMP)
+#pragma omp critical (amrex_const_particle_tile_data_cache)
+#endif
+        {
+            if (m_runtime_cptrs_dirty.load(std::memory_order_relaxed)) {
+                m_runtime_r_cptrs.resize(m_soa_tile.NumRealComps() - NArrayReal);
+                m_runtime_i_cptrs.resize(m_soa_tile.NumIntComps() - NArrayInt);
+#ifdef AMREX_USE_GPU
+                bool copy_real = false;
+                m_h_runtime_r_cptrs.resize(m_soa_tile.NumRealComps() - NArrayReal, nullptr);
+                for (std::size_t i = 0; i < m_h_runtime_r_cptrs.size(); ++i) {
+                    if (m_h_runtime_r_cptrs[i] != m_soa_tile.GetRealData(i + NArrayReal).dataPtr()) {
+                        m_h_runtime_r_cptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
+                        copy_real = true;
+                    }
+                }
+                if (copy_real) {
+                    Gpu::htod_memcpy_async(m_runtime_r_cptrs.data(), m_h_runtime_r_cptrs.data(),
+                                           m_h_runtime_r_cptrs.size()*sizeof(ParticleReal*));
+                }
+
+                bool copy_int = false;
+                m_h_runtime_i_cptrs.resize(m_soa_tile.NumIntComps() - NArrayInt, nullptr);
+                for (std::size_t i = 0; i < m_h_runtime_i_cptrs.size(); ++i) {
+                    if (m_h_runtime_i_cptrs[i] != m_soa_tile.GetIntData(i + NArrayInt).dataPtr()) {
+                        m_h_runtime_i_cptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
+                        copy_int = true;
+                    }
+                }
+                if (copy_int) {
+                    Gpu::htod_memcpy_async(m_runtime_i_cptrs.data(), m_h_runtime_i_cptrs.data(),
+                                           m_h_runtime_i_cptrs.size()*sizeof(int*));
+                }
+
+                if (copy_real || copy_int) {
+                    Gpu::streamSynchronize();
+                }
+#else
+                for (std::size_t i = 0; i < m_runtime_r_cptrs.size(); ++i) {
+                    m_runtime_r_cptrs[i] = m_soa_tile.GetRealData(i + NArrayReal).dataPtr();
+                }
+
+                for (std::size_t i = 0; i < m_runtime_i_cptrs.size(); ++i) {
+                    m_runtime_i_cptrs[i] = m_soa_tile.GetIntData(i + NArrayInt).dataPtr();
+                }
+#endif
+                m_runtime_cptrs_dirty.store(false, std::memory_order_release);
+            }
+        }
+    }
 
     AoS m_aos_tile;
     SoA m_soa_tile;
@@ -1304,6 +1593,9 @@ private:
 
     mutable amrex::Gpu::HostVector<const ParticleReal*> m_h_runtime_r_cptrs;
     mutable amrex::Gpu::HostVector<const int*> m_h_runtime_i_cptrs;
+
+    RuntimePtrCacheDirtyFlag m_runtime_ptrs_dirty;
+    mutable RuntimePtrCacheDirtyFlag m_runtime_cptrs_dirty;
 };
 
 } // namespace amrex

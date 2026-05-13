@@ -28,11 +28,13 @@ pcinterp_interp (Box const& bx,
     }
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace interp_detail {
     constexpr int ix   = 0;
     constexpr int iy   = 1;
     constexpr int ixy  = 2;
 }
+/// \endcond
 
 template<typename T>
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void
@@ -95,14 +97,14 @@ nodebilin_interp (Box const& bx, Array4<T> const& fine, const int fcomp, const i
 template<typename T>
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void
 facediv_face_interp (int ci, int cj, int /*ck*/,
-                     int nc, int nf, int idir,
+                     int n, int idir,
                      Array4<T const> const& crse,
                      Array4<T> const& fine,
                      Array4<int const> const& mask,
                      IntVect const& ratio) noexcept
 {
     if (mask) {
-        if (!mask(ci, cj, 0, nc))
+        if (!mask(ci, cj, 0, n))
             { return; }
     }
 
@@ -112,23 +114,23 @@ facediv_face_interp (int ci, int cj, int /*ck*/,
     switch (idir) {
         case 0:
         {
-            const Real neg = crse(ci, cj-1, 0, nc);
-            const Real cen = crse(ci, cj  , 0, nc);
-            const Real pos = crse(ci, cj+1, 0, nc);
+            const Real neg = crse(ci, cj-1, 0, n);
+            const Real cen = crse(ci, cj  , 0, n);
+            const Real pos = crse(ci, cj+1, 0, n);
 
-            fine(fi, fj  , 0, nf) = Real(0.125)*(8*cen + neg - pos);
-            fine(fi, fj+1, 0, nf) = Real(0.125)*(8*cen + pos - neg);
+            fine(fi, fj  , 0, n) = Real(0.125)*(8*cen + neg - pos);
+            fine(fi, fj+1, 0, n) = Real(0.125)*(8*cen + pos - neg);
 
             break;
         }
         case 1:
         {
-            const Real neg = crse(ci-1, cj, 0, nc);
-            const Real cen = crse(ci  , cj, 0, nc);
-            const Real pos = crse(ci+1, cj, 0, nc);
+            const Real neg = crse(ci-1, cj, 0, n);
+            const Real cen = crse(ci  , cj, 0, n);
+            const Real pos = crse(ci+1, cj, 0, n);
 
-            fine(fi  , fj, 0, nf) = Real(0.125)*(8*cen + neg - pos);
-            fine(fi+1, fj, 0, nf) = Real(0.125)*(8*cen + pos - neg);
+            fine(fi  , fj, 0, n) = Real(0.125)*(8*cen + neg - pos);
+            fine(fi+1, fj, 0, n) = Real(0.125)*(8*cen + pos - neg);
 
             break;
         }

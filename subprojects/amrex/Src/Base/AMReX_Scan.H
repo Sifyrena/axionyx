@@ -6,8 +6,11 @@
 #include <AMReX_Gpu.H>
 #include <AMReX_Arena.H>
 
-#if defined(AMREX_USE_CUDA) && defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 11)
+#if defined(AMREX_USE_CUDA)
 #  include <cub/cub.cuh>
+#  ifdef AMREX_CUDA_CCCL_VER_GE_2_8
+#  include <thrust/iterator/transform_iterator.h>
+#  endif
 #elif defined(AMREX_USE_HIP)
 #  include <rocprim/rocprim.hpp>
 #elif defined(AMREX_USE_SYCL) && defined(AMREX_USE_ONEDPL)
@@ -36,6 +39,7 @@ namespace Type {
 
 #if defined(AMREX_USE_GPU)
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <typename T>
@@ -182,6 +186,7 @@ struct BlockStatus<T, false>
 };
 
 }
+/// \endcond
 
 #if defined(AMREX_USE_SYCL)
 
@@ -194,7 +199,8 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
     constexpr int nthreads = nwarps_per_block*Gpu::Device::warp_size;
     constexpr int nchunks = 12;
     constexpr int nelms_per_block = nthreads * nchunks;
-    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(std::numeric_limits<int>::max())*nelms_per_block);
+    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(
+                        std::numeric_limits<int>::max())*nelms_per_block);
     int nblocks = (static_cast<Long>(n) + nelms_per_block - 1) / nelms_per_block;
     std::size_t sm = sizeof(T) * (Gpu::Device::warp_size + nwarps_per_block);
     auto stream = Gpu::gpuStream();
@@ -209,7 +215,7 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
     T* blocksum_p = (T*)(dp + nbytes_blockresult);
     T* totalsum_p = (T*)(dp + nbytes_blockresult + nbytes_blocksum);
 
-    amrex::launch(nblocks, nthreads, sm, stream,
+    amrex::launch<nthreads>(nblocks, sm, stream,
     [=] AMREX_GPU_DEVICE (Gpu::Handler const& gh) noexcept
     {
         sycl::sub_group const& sg = gh.item->get_sub_group();
@@ -225,7 +231,7 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
         T* shared2 = shared + Gpu::Device::warp_size;
 
         // Each block processes [ibegin,iend).
-        N ibegin = nelms_per_block * blockIdxx;
+        N ibegin = static_cast<N>(nelms_per_block) * blockIdxx;
         N iend = amrex::min(static_cast<N>(ibegin+nelms_per_block), n);
 
         // Each block is responsible for nchunks chunks of data,
@@ -275,7 +281,7 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
             // sum within this chunk.
             T sum_prev_warp = (warp == 0) ? 0 : shared2[warp-1];
             T tmp_out = sum_prev_warp + sum_prev_chunk +
-                (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ? x : x-x0);
+                (std::is_same_v<std::decay_t<TYPE>,Type::Inclusive> ? x : x-x0);
             sum_prev_chunk += shared2[nwarps-1];
 
             if (offset < iend) {
@@ -289,7 +295,7 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
         }
     });
 
-    amrex::launch(1, nthreads, sm, stream,
+    amrex::launch<nthreads>(1, sm, stream,
     [=] AMREX_GPU_DEVICE (Gpu::Handler const& gh) noexcept
     {
         sycl::sub_group const& sg = gh.item->get_sub_group();
@@ -355,7 +361,7 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
         }
     });
 
-    amrex::launch(nblocks, nthreads, 0, stream,
+    amrex::launch<nthreads>(nblocks, 0, stream,
     [=] AMREX_GPU_DEVICE (Gpu::Handler const& gh) noexcept
     {
         int threadIdxx = gh.item->get_local_id(0);
@@ -363,7 +369,7 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
         int blockDimx = gh.item->get_local_range(0);
 
         // Each block processes [ibegin,iend).
-        N ibegin = nelms_per_block * blockIdxx;
+        N ibegin = static_cast<N>(nelms_per_block) * blockIdxx;
         N iend = amrex::min(static_cast<N>(ibegin+nelms_per_block), n);
         T prev_sum = (blockIdxx == 0) ? 0 : blocksum_p[blockIdxx-1];
         for (N offset = ibegin + threadIdxx; offset < iend; offset += blockDimx) {
@@ -374,20 +380,23 @@ T PrefixSum_mp (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum)
     T totalsum = 0;
     if (a_ret_sum) {
         Gpu::dtoh_memcpy_async(&totalsum, totalsum_p, sizeof(T));
-    }
-    Gpu::streamSynchronize();
-    The_Arena()->free(dp);
 
-    AMREX_GPU_ERROR_CHECK();
+        Gpu::streamSynchronize();
+        The_Arena()->free(dp);
+
+        AMREX_GPU_ERROR_CHECK();
+    } else {
+        Gpu::freeAsync(The_Arena(), dp);
+    }
 
     return totalsum;
 }
 #endif
 
 template <typename T, typename N, typename FIN, typename FOUT, typename TYPE,
-          typename M=std::enable_if_t<std::is_integral<N>::value &&
-                                      (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ||
-                                       std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value)> >
+          typename M=std::enable_if_t<std::is_integral_v<N> &&
+                                      (std::is_same_v<std::decay_t<TYPE>,Type::Inclusive> ||
+                                       std::is_same_v<std::decay_t<TYPE>,Type::Exclusive>)> >
 T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum)
 {
     if (n <= 0) { return 0; }
@@ -395,7 +404,8 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
     constexpr int nthreads = nwarps_per_block*Gpu::Device::warp_size;
     constexpr int nchunks = 12;
     constexpr int nelms_per_block = nthreads * nchunks;
-    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(std::numeric_limits<int>::max())*nelms_per_block);
+    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(
+                        std::numeric_limits<int>::max())*nelms_per_block);
     int nblocks = (static_cast<Long>(n) + nelms_per_block - 1) / nelms_per_block;
 
 #ifndef AMREX_SYCL_NO_MULTIPASS_SCAN
@@ -429,7 +439,7 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
         }
     });
 
-    amrex::launch(nblocks, nthreads, sm, stream,
+    amrex::launch<nthreads>(nblocks, sm, stream,
     [=] AMREX_GPU_DEVICE (Gpu::Handler const& gh) noexcept
     {
         sycl::sub_group const& sg = gh.item->get_sub_group();
@@ -459,7 +469,7 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
         }
 
         // Each block processes [ibegin,iend).
-        N ibegin = nelms_per_block * virtual_block_id;
+        N ibegin = static_cast<N>(nelms_per_block) * virtual_block_id;
         N iend = amrex::min(static_cast<N>(ibegin+nelms_per_block), n);
         BlockStatusT& block_status = block_status_p[virtual_block_id];
 
@@ -480,7 +490,7 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
 
             offset += threadIdxx;
             T x0 = (offset < iend) ? fin(offset) : 0;
-            if  (std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value && offset == n-1) {
+            if  (std::is_same_v<std::decay_t<TYPE>,Type::Exclusive> && offset == n-1) {
                 *totalsum_p += x0;
             }
             T x = x0;
@@ -520,7 +530,7 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
             // sum within this chunk.
             T sum_prev_warp = (warp == 0) ? 0 : shared2[warp-1];
             tmp_out[ichunk] = sum_prev_warp + sum_prev_chunk +
-                (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ? x : x-x0);
+                (std::is_same_v<std::decay_t<TYPE>,Type::Inclusive> ? x : x-x0);
             sum_prev_chunk += shared2[nwarps-1];
         }
 
@@ -612,11 +622,14 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
         // xxxxx SYCL todo: Should test if using pinned memory and thus
         // avoiding memcpy is faster.
         Gpu::dtoh_memcpy_async(&totalsum, totalsum_p, sizeof(T));
-    }
-    Gpu::streamSynchronize();
-    The_Arena()->free(dp);
 
-    AMREX_GPU_ERROR_CHECK();
+        Gpu::streamSynchronize();
+        The_Arena()->free(dp);
+
+        AMREX_GPU_ERROR_CHECK();
+    } else {
+        Gpu::freeAsync(The_Arena(), dp);
+    }
 
     return totalsum;
 }
@@ -624,9 +637,9 @@ T PrefixSum (N n, FIN && fin, FOUT && fout, TYPE type, RetSum a_ret_sum = retSum
 #elif defined(AMREX_USE_HIP)
 
 template <typename T, typename N, typename FIN, typename FOUT, typename TYPE,
-          typename M=std::enable_if_t<std::is_integral<N>::value &&
-                                      (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ||
-                                       std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value)> >
+          typename M=std::enable_if_t<std::is_integral_v<N> &&
+                                      (std::is_same_v<std::decay_t<TYPE>,Type::Inclusive> ||
+                                       std::is_same_v<std::decay_t<TYPE>,Type::Exclusive>)> >
 T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = retSum)
 {
     if (n <= 0) { return 0; }
@@ -634,6 +647,8 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
     constexpr int nthreads = nwarps_per_block*Gpu::Device::warp_size; // # of threads per block
     constexpr int nelms_per_thread = sizeof(T) >= 8 ? 8 : 16;
     constexpr int nelms_per_block = nthreads * nelms_per_thread;
+    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(
+                        std::numeric_limits<int>::max())*nelms_per_block);
     int nblocks = (n + nelms_per_block - 1) / nelms_per_block;
     std::size_t sm = 0;
     auto stream = Gpu::gpuStream();
@@ -672,7 +687,7 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
         (reinterpret_cast<OrderedBlockId::id_type*>(dp + nbytes_tile_state));
 
     // Init ScanTileState on device
-    amrex::launch((nblocks+nthreads-1)/nthreads, nthreads, 0, stream, [=] AMREX_GPU_DEVICE ()
+    amrex::launch<nthreads>((nblocks+nthreads-1)/nthreads, 0, stream, [=] AMREX_GPU_DEVICE ()
     {
         auto& scan_tile_state = const_cast<ScanTileState&>(tile_state);
         auto& scan_bid = const_cast<OrderedBlockId&>(ordered_block_id);
@@ -710,7 +725,7 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
         auto const virtual_block_id = scan_bid.get(threadIdx.x, temp_storage.ordered_bid);
 
         // Each block processes [ibegin,iend).
-        N ibegin = nelms_per_block * virtual_block_id;
+        N ibegin = static_cast<N>(nelms_per_block) * virtual_block_id;
         N iend = amrex::min(static_cast<N>(ibegin+nelms_per_block), n);
 
         auto input_begin = rocprim::make_transform_iterator(
@@ -727,7 +742,7 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
 
         __syncthreads();
 
-        constexpr bool is_exclusive = std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value;
+        constexpr bool is_exclusive = std::is_same_v<std::decay_t<TYPE>,Type::Exclusive>;
 
         if (virtual_block_id == 0) {
             T block_agg;
@@ -773,10 +788,14 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
         }
     });
 
-    Gpu::streamSynchronize();
-    AMREX_GPU_ERROR_CHECK();
+    if (totalsum_p) {
+        Gpu::streamSynchronize();
+        AMREX_GPU_ERROR_CHECK();
 
-    The_Arena()->free(dp);
+        The_Arena()->free(dp);
+    } else {
+        Gpu::freeAsync(The_Arena(), dp);
+    }
 
     T ret = (a_ret_sum) ? *totalsum_p : T(0);
     if (totalsum_p) { The_Pinned_Arena()->free(totalsum_p); }
@@ -784,12 +803,12 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
     return ret;
 }
 
-#elif defined(AMREX_USE_CUDA) && defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 11)
+#elif defined(AMREX_USE_CUDA)
 
 template <typename T, typename N, typename FIN, typename FOUT, typename TYPE,
-          typename M=std::enable_if_t<std::is_integral<N>::value &&
-                                      (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ||
-                                       std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value)> >
+          typename M=std::enable_if_t<std::is_integral_v<N> &&
+                                      (std::is_same_v<std::decay_t<TYPE>,Type::Inclusive> ||
+                                       std::is_same_v<std::decay_t<TYPE>,Type::Exclusive>)> >
 T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = retSum)
 {
     if (n <= 0) { return 0; }
@@ -797,6 +816,8 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
     constexpr int nthreads = nwarps_per_block*Gpu::Device::warp_size; // # of threads per block
     constexpr int nelms_per_thread = sizeof(T) >= 8 ? 4 : 8;
     constexpr int nelms_per_block = nthreads * nelms_per_thread;
+    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(
+                        std::numeric_limits<int>::max())*nelms_per_block);
     int nblocks = (n + nelms_per_block - 1) / nelms_per_block;
     std::size_t sm = 0;
     auto stream = Gpu::gpuStream();
@@ -813,7 +834,7 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
 
     if (nblocks > 1) {
         // Init ScanTileState on device
-        amrex::launch((nblocks+nthreads-1)/nthreads, nthreads, 0, stream, [=] AMREX_GPU_DEVICE ()
+        amrex::launch<nthreads>((nblocks+nthreads-1)/nthreads, 0, stream, [=] AMREX_GPU_DEVICE ()
         {
             const_cast<ScanTileState&>(tile_state).InitializeStatus(nblocks);
         });
@@ -827,7 +848,13 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
         using BlockLoad = cub::BlockLoad<T, nthreads, nelms_per_thread, cub::BLOCK_LOAD_WARP_TRANSPOSE>;
         using BlockScan = cub::BlockScan<T, nthreads, cub::BLOCK_SCAN_WARP_SCANS>;
         using BlockExchange = cub::BlockExchange<T, nthreads, nelms_per_thread>;
-        using TilePrefixCallbackOp = cub::TilePrefixCallbackOp<T, cub::Sum, ScanTileState>;
+
+#ifdef AMREX_CUDA_CCCL_VER_GE_2_8
+        using Sum = cuda::std::plus<T>;
+#else
+        using Sum = cub::Sum;
+#endif
+        using TilePrefixCallbackOp = cub::TilePrefixCallbackOp<T, Sum, ScanTileState>;
 
         __shared__ union TempStorage
         {
@@ -845,12 +872,17 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
         int virtual_block_id = blockIdx.x;
 
         // Each block processes [ibegin,iend).
-        N ibegin = nelms_per_block * virtual_block_id;
+        N ibegin = static_cast<N>(nelms_per_block) * virtual_block_id;
         N iend = amrex::min(static_cast<N>(ibegin+nelms_per_block), n);
 
         auto input_lambda = [&] (N i) -> T { return fin(i+ibegin); };
+#ifdef AMREX_CUDA_CCCL_VER_GE_2_8
+        thrust::transform_iterator<decltype(input_lambda),thrust::counting_iterator<N> >
+            input_begin(thrust::counting_iterator<N>(0), input_lambda);
+#else
         cub::TransformInputIterator<T,decltype(input_lambda),cub::CountingInputIterator<N> >
             input_begin(cub::CountingInputIterator<N>(0), input_lambda);
+#endif
 
         T data[nelms_per_thread];
         if (static_cast<int>(iend-ibegin) == nelms_per_block) {
@@ -861,7 +893,7 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
 
         __syncthreads();
 
-        constexpr bool is_exclusive = std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value;
+        constexpr bool is_exclusive = std::is_same_v<std::decay_t<TYPE>,Type::Exclusive>;
 
         if (virtual_block_id == 0) {
             T block_agg;
@@ -881,7 +913,7 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
             T last = data[nelms_per_thread-1]; // Need this for the total sum in exclusive case
 
             TilePrefixCallbackOp prefix_op(scan_tile_state, temp_storage.scan_storeage.prefix,
-                                           cub::Sum{}, virtual_block_id);
+                                           Sum{}, virtual_block_id);
             AMREX_IF_CONSTEXPR(is_exclusive) {
                 BlockScan(temp_storage.scan_storeage.scan).ExclusiveSum(data, data, prefix_op);
             } else {
@@ -906,10 +938,14 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
         }
     });
 
-    Gpu::streamSynchronize();
-    AMREX_GPU_ERROR_CHECK();
+    if (totalsum_p) {
+        Gpu::streamSynchronize();
+        AMREX_GPU_ERROR_CHECK();
 
-    The_Arena()->free(tile_state_p);
+        The_Arena()->free(tile_state_p);
+    } else {
+        Gpu::freeAsync(The_Arena(), tile_state_p);
+    }
 
     T ret = (a_ret_sum) ? *totalsum_p : T(0);
     if (totalsum_p) { The_Pinned_Arena()->free(totalsum_p); }
@@ -917,257 +953,24 @@ T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = ret
     return ret;
 }
 
-#else
-
-template <typename T, typename N, typename FIN, typename FOUT, typename TYPE,
-          typename M=std::enable_if_t<std::is_integral<N>::value &&
-                                      (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ||
-                                       std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value)> >
-T PrefixSum (N n, FIN const& fin, FOUT const& fout, TYPE, RetSum a_ret_sum = retSum)
-{
-    if (n <= 0) { return 0; }
-    constexpr int nwarps_per_block = 4;
-    constexpr int nthreads = nwarps_per_block*Gpu::Device::warp_size;
-    constexpr int nchunks = 12;
-    constexpr int nelms_per_block = nthreads * nchunks;
-    AMREX_ALWAYS_ASSERT(static_cast<Long>(n) < static_cast<Long>(std::numeric_limits<int>::max())*nelms_per_block);
-    int nblocks = (static_cast<Long>(n) + nelms_per_block - 1) / nelms_per_block;
-    std::size_t sm = sizeof(T) * (Gpu::Device::warp_size + nwarps_per_block) + sizeof(int);
-    auto stream = Gpu::gpuStream();
-
-    using BlockStatusT = std::conditional_t<sizeof(detail::STVA<T>) <= 8,
-        detail::BlockStatus<T,true>, detail::BlockStatus<T,false> >;
-
-    std::size_t nbytes_blockstatus = Arena::align(sizeof(BlockStatusT)*nblocks);
-    std::size_t nbytes_blockid = Arena::align(sizeof(unsigned int));
-    std::size_t nbytes_totalsum = Arena::align(sizeof(T));
-    auto dp = (char*)(The_Arena()->alloc(  nbytes_blockstatus
-                                         + nbytes_blockid
-                                         + nbytes_totalsum));
-    BlockStatusT* AMREX_RESTRICT block_status_p = (BlockStatusT*)dp;
-    unsigned int* AMREX_RESTRICT virtual_block_id_p = (unsigned int*)(dp + nbytes_blockstatus);
-    T* AMREX_RESTRICT totalsum_p = (T*)(dp + nbytes_blockstatus + nbytes_blockid);
-
-    amrex::ParallelFor(nblocks, [=] AMREX_GPU_DEVICE (int i) noexcept {
-        BlockStatusT& block_status = block_status_p[i];
-        block_status.set_status('x');
-        if (i == 0) {
-            *virtual_block_id_p = 0;
-            *totalsum_p = 0;
-        }
-    });
-
-    amrex::launch(nblocks, nthreads, sm, stream,
-    [=] AMREX_GPU_DEVICE () noexcept
-    {
-        int lane = threadIdx.x % Gpu::Device::warp_size;
-        int warp = threadIdx.x / Gpu::Device::warp_size;
-        int nwarps = nthreads / Gpu::Device::warp_size;
-
-        amrex::Gpu::SharedMemory<T> gsm;
-        T* shared = gsm.dataPtr();
-        T* shared2 = shared + Gpu::Device::warp_size;
-
-        // First of all, get block virtual id.  We must do this to
-        // avoid deadlock because CUDA may launch blocks in any order.
-        // Anywhere in this function, we should not use blockIdx.
-        int virtual_block_id = 0;
-        if (gridDim.x > 1) {
-            int& virtual_block_id_shared = *((int*)(shared2+nwarps));
-            if (threadIdx.x == 0) {
-                unsigned int bid = Gpu::Atomic::Add(virtual_block_id_p, 1u);
-                virtual_block_id_shared = bid;
-            }
-            __syncthreads();
-            virtual_block_id = virtual_block_id_shared;
-        }
-
-        // Each block processes [ibegin,iend).
-        N ibegin = nelms_per_block * virtual_block_id;
-        N iend = amrex::min(static_cast<N>(ibegin+nelms_per_block), n);
-        BlockStatusT& block_status = block_status_p[virtual_block_id];
-
-        //
-        // The overall algorithm is based on "Single-pass Parallel
-        // Prefix Scan with Decoupled Look-back" by D. Merrill &
-        // M. Garland.
-        //
-
-        // Each block is responsible for nchunks chunks of data,
-        // where each chunk has blockDim.x elements, one for each
-        // thread in the block.
-        T sum_prev_chunk = 0; // inclusive sum from previous chunks.
-        T tmp_out[nchunks]; // block-wide inclusive sum for chunks
-        for (int ichunk = 0; ichunk < nchunks; ++ichunk) {
-            N offset = ibegin + ichunk*nthreads;
-            if (offset >= iend) { break; }
-
-            offset += threadIdx.x;
-            T x0 = (offset < iend) ? fin(offset) : 0;
-            if  (std::is_same<std::decay_t<TYPE>,Type::Exclusive>::value && offset == n-1) {
-                *totalsum_p += x0;
-            }
-            T x = x0;
-            // Scan within a warp
-            for (int i = 1; i <= Gpu::Device::warp_size; i *= 2) {
-                AMREX_HIP_OR_CUDA( T s = __shfl_up(x,i);,
-                                   T s = __shfl_up_sync(0xffffffff, x, i); )
-                if (lane >= i) { x += s; }
-            }
-
-            // x now holds the inclusive sum within the warp.  The
-            // last thread in each warp holds the inclusive sum of
-            // this warp.  We will store it in shared memory.
-            if (lane == Gpu::Device::warp_size - 1) {
-                shared[warp] = x;
-            }
-
-            __syncthreads();
-
-            // The first warp will do scan on the warp sums for the
-            // whole block.  Not all threads in the warp need to
-            // participate.
-#ifdef AMREX_USE_CUDA
-            if (warp == 0 && lane < nwarps) {
-                T y = shared[lane];
-                int mask = (1 << nwarps) - 1;
-                for (int i = 1; i <= nwarps; i *= 2) {
-                    T s = __shfl_up_sync(mask, y, i, nwarps);
-                    if (lane >= i) { y += s; }
-                }
-                shared2[lane] = y;
-            }
-#else
-            if (warp == 0) {
-                T y = 0;
-                if (lane < nwarps) {
-                    y = shared[lane];
-                }
-                for (int i = 1; i <= nwarps; i *= 2) {
-                    T s = __shfl_up(y, i, nwarps);
-                    if (lane >= i) { y += s; }
-                }
-                if (lane < nwarps) {
-                    shared2[lane] = y;
-                }
-            }
 #endif
 
-            __syncthreads();
-
-            // shared[0:nwarps) holds the inclusive sum of warp sums.
-
-            // Also note x still holds the inclusive sum within the
-            // warp.  Given these two, we can compute the inclusive
-            // sum within this chunk.
-            T sum_prev_warp = (warp == 0) ? 0 : shared2[warp-1];
-            tmp_out[ichunk] = sum_prev_warp + sum_prev_chunk +
-                (std::is_same<std::decay_t<TYPE>,Type::Inclusive>::value ? x : x-x0);
-            sum_prev_chunk += shared2[nwarps-1];
-        }
-
-        // sum_prev_chunk now holds the sum of the whole block.
-        if (threadIdx.x == 0 && gridDim.x > 1) {
-            block_status.write((virtual_block_id == 0) ? 'p' : 'a',
-                               sum_prev_chunk);
-        }
-
-        if (virtual_block_id == 0) {
-            for (int ichunk = 0; ichunk < nchunks; ++ichunk) {
-                N offset = ibegin + ichunk*nthreads + threadIdx.x;
-                if (offset >= iend) { break; }
-                fout(offset, tmp_out[ichunk]);
-                if (offset == n-1) {
-                    *totalsum_p += tmp_out[ichunk];
-                }
-            }
-        } else if (virtual_block_id > 0) {
-
-            if (warp == 0) {
-                T exclusive_prefix = 0;
-                BlockStatusT volatile* pbs = block_status_p;
-                for (int iblock0 = virtual_block_id-1; iblock0 >= 0; iblock0 -= Gpu::Device::warp_size)
-                {
-                    int iblock = iblock0-lane;
-                    detail::STVA<T> stva{'p', 0};
-                    if (iblock >= 0) {
-                        stva = pbs[iblock].wait();
-                    }
-
-                    T x = stva.value;
-
-                    AMREX_HIP_OR_CUDA( uint64_t const status_bf = __ballot(stva.status == 'p');,
-                                       unsigned const status_bf = __ballot_sync(0xffffffff, stva.status == 'p'));
-                    bool stop_lookback = status_bf & 0x1u;
-                    if (stop_lookback == false) {
-                        if (status_bf != 0) {
-                            T y = x;
-                            if (lane > 0) { x = 0; }
-                            AMREX_HIP_OR_CUDA(uint64_t bit_mask = 0x1ull;,
-                                              unsigned bit_mask = 0x1u);
-                            for (int i = 1; i < Gpu::Device::warp_size; ++i) {
-                                bit_mask <<= 1;
-                                if (i == lane) { x = y; }
-                                if (status_bf & bit_mask) {
-                                    stop_lookback = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        for (int i = Gpu::Device::warp_size/2; i > 0; i /= 2) {
-                            AMREX_HIP_OR_CUDA( x += __shfl_down(x,i);,
-                                               x += __shfl_down_sync(0xffffffff, x, i); )
-                        }
-                    }
-
-                    if (lane == 0) { exclusive_prefix += x; }
-                    if (stop_lookback) { break; }
-                }
-
-                if (lane == 0) {
-                    block_status.write('p', block_status.get_aggregate() + exclusive_prefix);
-                    shared[0] = exclusive_prefix;
-                }
-            }
-
-            __syncthreads();
-
-            T exclusive_prefix = shared[0];
-
-            for (int ichunk = 0; ichunk < nchunks; ++ichunk) {
-                N offset = ibegin + ichunk*nthreads + threadIdx.x;
-                if (offset >= iend) { break; }
-                T t = tmp_out[ichunk] + exclusive_prefix;
-                fout(offset, t);
-                if (offset == n-1) {
-                    *totalsum_p += t;
-                }
-            }
-        }
-    });
-
-    T totalsum = 0;
-    if (a_ret_sum) {
-        // xxxxx CUDA < 11 todo: Should test if using pinned memory and thus
-        // avoiding memcpy is faster.
-        Gpu::dtoh_memcpy_async(&totalsum, totalsum_p, sizeof(T));
-    }
-    Gpu::streamSynchronize();
-    The_Arena()->free(dp);
-
-    AMREX_GPU_ERROR_CHECK();
-
-    return totalsum;
-}
-
-#endif
-
-// The return value is the total sum if a_ret_sum is true.
-template <typename N, typename T, typename M=std::enable_if_t<std::is_integral<N>::value> >
+/**
+ * \ingroup amrex_collectives
+ *
+ * \brief Inclusive sum
+ *
+ * \param n number of elements
+ * \param in input
+ * \param out output
+ * \param a_ret_sum control the return value
+ * \return return the total sum if `a_ret_sum` is true
+ */
+template <typename N, typename T, typename M=std::enable_if_t<std::is_integral_v<N>> >
 T InclusiveSum (N n, T const* in, T * out, RetSum a_ret_sum = retSum)
 {
-#if defined(AMREX_USE_CUDA) && defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 11)
+    if (n <= 0) { return 0; }
+#if defined(AMREX_USE_CUDA)
     void* d_temp = nullptr;
     std::size_t temp_bytes = 0;
     AMREX_GPU_SAFE_CALL(cub::DeviceScan::InclusiveSum(d_temp, temp_bytes, in, out, n,
@@ -1212,8 +1015,8 @@ T InclusiveSum (N n, T const* in, T * out, RetSum a_ret_sum = retSum)
 #else
     if (static_cast<Long>(n) <= static_cast<Long>(std::numeric_limits<int>::max())) {
         return PrefixSum<T>(static_cast<int>(n),
-                            [=] AMREX_GPU_DEVICE (N i) -> T { return in[i]; },
-                            [=] AMREX_GPU_DEVICE (N i, T const& x) { out[i] = x; },
+                            [=] AMREX_GPU_DEVICE (int i) -> T { return in[i]; },
+                            [=] AMREX_GPU_DEVICE (int i, T const& x) { out[i] = x; },
                             Type::inclusive, a_ret_sum);
     } else {
         return PrefixSum<T>(n,
@@ -1224,12 +1027,22 @@ T InclusiveSum (N n, T const* in, T * out, RetSum a_ret_sum = retSum)
 #endif
 }
 
-// The return value is the total sum if a_ret_sum is true.
-template <typename N, typename T, typename M=std::enable_if_t<std::is_integral<N>::value> >
+/**
+ * \ingroup amrex_collectives
+ *
+ * \brief Exclusive sum
+ *
+ * \param n number of elements
+ * \param in input
+ * \param out output
+ * \param a_ret_sum control the return value
+ * \return return the total sum if `a_ret_sum` is true
+ */
+template <typename N, typename T, typename M=std::enable_if_t<std::is_integral_v<N>> >
 T ExclusiveSum (N n, T const* in, T * out, RetSum a_ret_sum = retSum)
 {
     if (n <= 0) { return 0; }
-#if defined(AMREX_USE_CUDA) && defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 11)
+#if defined(AMREX_USE_CUDA)
     T in_last = 0;
     if (a_ret_sum) {
         Gpu::dtoh_memcpy_async(&in_last, in+(n-1), sizeof(T));
@@ -1286,8 +1099,8 @@ T ExclusiveSum (N n, T const* in, T * out, RetSum a_ret_sum = retSum)
 #else
     if (static_cast<Long>(n) <= static_cast<Long>(std::numeric_limits<int>::max())) {
         return PrefixSum<T>(static_cast<int>(n),
-                            [=] AMREX_GPU_DEVICE (N i) -> T { return in[i]; },
-                            [=] AMREX_GPU_DEVICE (N i, T const& x) { out[i] = x; },
+                            [=] AMREX_GPU_DEVICE (int i) -> T { return in[i]; },
+                            [=] AMREX_GPU_DEVICE (int i, T const& x) { out[i] = x; },
                             Type::exclusive, a_ret_sum);
     } else {
         return PrefixSum<T>(n,
@@ -1356,11 +1169,13 @@ T ExclusiveSum (N n, T const* in, T * out, RetSum /*a_ret_sum*/ = retSum)
 
 namespace Gpu
 {
+    /// \ingroup amrex_collectives
     template<class InIter, class OutIter>
     OutIter inclusive_scan (InIter begin, InIter end, OutIter result)
     {
 #if defined(AMREX_USE_GPU)
         auto N = std::distance(begin, end);
+        if (N <= 0) { return result; }
         Scan::InclusiveSum(N, &(*begin), &(*result), Scan::noRetSum);
         OutIter result_end = result;
         std::advance(result_end, N);
@@ -1373,11 +1188,13 @@ namespace Gpu
 #endif
     }
 
+    /// \ingroup amrex_collectives
     template<class InIter, class OutIter>
     OutIter exclusive_scan (InIter begin, InIter end, OutIter result)
     {
 #if defined(AMREX_USE_GPU)
         auto N = std::distance(begin, end);
+        if (N <= 0) { return result; }
         Scan::ExclusiveSum(N, &(*begin), &(*result), Scan::noRetSum);
         OutIter result_end = result;
         std::advance(result_end, N);

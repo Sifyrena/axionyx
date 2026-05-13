@@ -3,6 +3,9 @@
 #include <AMReX_Config.H>
 
 #include <AMReX_WriteBinaryParticleData.H>
+#include <AMReX_VisMF.H>
+
+#include <iterator>
 
 namespace amrex {
 
@@ -38,10 +41,11 @@ struct FilterPositiveID {
     template <typename P>
     AMREX_GPU_HOST_DEVICE
     int operator() (const P& p) const {
-        return p.id() > 0;
+        return p.id().is_valid();
     }
 };
 
+/// \ingroup amrex_io
 template <typename ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator, class CellAssignor>
 void
@@ -103,6 +107,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                             FilterPositiveID{}, true);
 }
 
+/// \ingroup amrex_io
 template <typename ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator, class CellAssignor>
 void
@@ -132,6 +137,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                             FilterPositiveID{});
 }
 
+/// \ingroup amrex_io
 template <typename ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator, class CellAssignor>
 void
@@ -164,6 +170,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                             FilterPositiveID{});
 }
 
+/// \ingroup amrex_io
 template <typename ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator, class CellAssignor>
 void
@@ -200,6 +207,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                             FilterPositiveID{});
 }
 
+/// \ingroup amrex_io
 template <typename ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator, class CellAssignor>
 void
@@ -210,159 +218,6 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                  const Vector<int>& write_int_comp) const
 {
 
-    if constexpr(ParticleType::is_soa_particle) {
-        AMREX_ALWAYS_ASSERT(write_real_comp.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
-    } else {
-        AMREX_ALWAYS_ASSERT(write_real_comp.size() == NumRealComps() + NStructReal);
-    }
-    AMREX_ASSERT(write_int_comp.size()  == NStructInt  + NArrayInt );
-
-    Vector<std::string> real_comp_names;
-    int first_rcomp = ParticleType::is_soa_particle ? AMREX_SPACEDIM : 0;
-    for (int i = first_rcomp; i < NStructReal + NumRealComps(); ++i )
-    {
-        real_comp_names.push_back(getDefaultCompNameReal<ParticleType>(i));
-    }
-
-    Vector<std::string> int_comp_names;
-    for (int i = 0; i < NStructInt + NumIntComps(); ++i )
-    {
-        int_comp_names.push_back(getDefaultCompNameInt<ParticleType>(i));
-    }
-
-    WriteBinaryParticleData(dir, name, write_real_comp, write_int_comp,
-                            real_comp_names, int_comp_names,
-                            FilterPositiveID{});
-}
-
-template <typename ParticleType, int NArrayReal, int NArrayInt,
-          template<class> class Allocator, class CellAssignor>
-void
-ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>::
-WritePlotFile (const std::string& dir, const std::string& name,
-               const Vector<int>& write_real_comp,
-               const Vector<int>& write_int_comp,
-               const Vector<std::string>& real_comp_names,
-               const Vector<std::string>&  int_comp_names) const
-{
-    BL_PROFILE("ParticleContainer::WritePlotFile()");
-
-    WriteBinaryParticleData(dir, name,
-                            write_real_comp, write_int_comp,
-                            real_comp_names, int_comp_names,
-                            FilterPositiveID{});
-}
-
-template <typename ParticleType, int NArrayReal, int NArrayInt,
-          template<class> class Allocator, class CellAssignor>
-template <class F, std::enable_if_t<!std::is_same_v<std::decay_t<F>, Vector<std::string>>>*>
-void
-ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
-::WritePlotFile (const std::string& dir, const std::string& name, F&& f) const
-{
-    Vector<int> write_real_comp;
-    Vector<std::string> real_comp_names;
-
-    int first_rcomp = ParticleType::is_soa_particle ? AMREX_SPACEDIM : 0;
-    for (int i = first_rcomp; i < NStructReal + NumRealComps(); ++i )
-    {
-        write_real_comp.push_back(1);
-        real_comp_names.push_back(getDefaultCompNameReal<ParticleType>(i));
-    }
-
-    Vector<int> write_int_comp;
-    Vector<std::string> int_comp_names;
-    for (int i = 0; i < NStructInt + NumIntComps(); ++i )
-    {
-        write_int_comp.push_back(1);
-        int_comp_names.push_back(getDefaultCompNameInt<ParticleType>(i));
-    }
-
-    WriteBinaryParticleData(dir, name, write_real_comp, write_int_comp,
-                            real_comp_names, int_comp_names,
-                            std::forward<F>(f));
-}
-
-template <typename ParticleType, int NArrayReal, int NArrayInt,
-          template<class> class Allocator, class CellAssignor>
-template <class F>
-void
-ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
-::WritePlotFile (const std::string& dir, const std::string& name,
-                 const Vector<std::string>& real_comp_names,
-                 const Vector<std::string>& int_comp_names, F&& f) const
-{
-    if constexpr(ParticleType::is_soa_particle) {
-        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
-    } else {
-        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal);
-    }
-    AMREX_ASSERT( int_comp_names.size() == NStructInt  + NArrayInt );
-
-    Vector<int> write_real_comp;
-    int nrc = ParticleType::is_soa_particle ? NStructReal + NumRealComps() - AMREX_SPACEDIM : NStructReal + NumRealComps();
-    for (int i = 0; i < nrc; ++i) {
-        write_real_comp.push_back(1);
-    }
-
-    Vector<int> write_int_comp;
-    for (int i = 0; i < NStructInt + NumIntComps(); ++i) {
-        write_int_comp.push_back(1);
-    }
-
-    WriteBinaryParticleData(dir, name,
-                            write_real_comp, write_int_comp,
-                            real_comp_names, int_comp_names,
-                            std::forward<F>(f));
-}
-
-template <typename ParticleType, int NArrayReal, int NArrayInt,
-          template<class> class Allocator, class CellAssignor>
-template <class F, std::enable_if_t<!std::is_same_v<std::decay_t<F>, Vector<std::string>>>*>
-void
-ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
-::WritePlotFile (const std::string& dir, const std::string& name,
-                 const Vector<std::string>& real_comp_names, F&& f) const
-{
-    if constexpr(ParticleType::is_soa_particle) {
-        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
-    } else {
-        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal);
-    }
-
-    Vector<int> write_real_comp;
-    int nrc = ParticleType::is_soa_particle ? NStructReal + NumRealComps() - AMREX_SPACEDIM : NStructReal + NumRealComps();
-    for (int i = 0; i < nrc; ++i) {
-        write_real_comp.push_back(1);
-    }
-
-    Vector<int> write_int_comp;
-    for (int i = 0; i < NStructInt + NumIntComps(); ++i) {
-        write_int_comp.push_back(1);
-    }
-
-    Vector<std::string> int_comp_names;
-    for (int i = 0; i < NStructInt + NumIntComps(); ++i )
-    {
-        int_comp_names.push_back(getDefaultCompNameInt<ParticleType>(i));
-    }
-
-    WriteBinaryParticleData(dir, name,
-                            write_real_comp, write_int_comp,
-                            real_comp_names, int_comp_names,
-                            std::forward<F>(f));
-}
-
-template <typename ParticleType, int NArrayReal, int NArrayInt,
-          template<class> class Allocator, class CellAssignor>
-template <class F>
-void
-ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
-::WritePlotFile (const std::string& dir,
-                 const std::string& name,
-                 const Vector<int>& write_real_comp,
-                 const Vector<int>& write_int_comp, F&& f) const
-{
     if constexpr(ParticleType::is_soa_particle) {
         AMREX_ALWAYS_ASSERT(write_real_comp.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
     } else {
@@ -385,9 +240,164 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
 
     WriteBinaryParticleData(dir, name, write_real_comp, write_int_comp,
                             real_comp_names, int_comp_names,
-                            std::forward<F>(f));
+                            FilterPositiveID{});
 }
 
+/// \ingroup amrex_io
+template <typename ParticleType, int NArrayReal, int NArrayInt,
+          template<class> class Allocator, class CellAssignor>
+void
+ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>::
+WritePlotFile (const std::string& dir, const std::string& name,
+               const Vector<int>& write_real_comp,
+               const Vector<int>& write_int_comp,
+               const Vector<std::string>& real_comp_names,
+               const Vector<std::string>&  int_comp_names) const
+{
+    BL_PROFILE("ParticleContainer::WritePlotFile()");
+
+    WriteBinaryParticleData(dir, name,
+                            write_real_comp, write_int_comp,
+                            real_comp_names, int_comp_names,
+                            FilterPositiveID{});
+}
+
+/// \ingroup amrex_io
+template <typename ParticleType, int NArrayReal, int NArrayInt,
+          template<class> class Allocator, class CellAssignor>
+template <class F>
+void
+ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
+::WritePlotFile (const std::string& dir, const std::string& name, F const& f) const
+{
+    Vector<int> write_real_comp;
+    Vector<std::string> real_comp_names;
+
+    int first_rcomp = ParticleType::is_soa_particle ? AMREX_SPACEDIM : 0;
+    for (int i = first_rcomp; i < NStructReal + NumRealComps(); ++i )
+    {
+        write_real_comp.push_back(1);
+        real_comp_names.push_back(getDefaultCompNameReal<ParticleType>(i));
+    }
+
+    Vector<int> write_int_comp;
+    Vector<std::string> int_comp_names;
+    for (int i = 0; i < NStructInt + NumIntComps(); ++i )
+    {
+        write_int_comp.push_back(1);
+        int_comp_names.push_back(getDefaultCompNameInt<ParticleType>(i));
+    }
+
+    WriteBinaryParticleData(dir, name, write_real_comp, write_int_comp,
+                            real_comp_names, int_comp_names, f);
+}
+
+/// \ingroup amrex_io
+template <typename ParticleType, int NArrayReal, int NArrayInt,
+          template<class> class Allocator, class CellAssignor>
+template <class F>
+void
+ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
+::WritePlotFile (const std::string& dir, const std::string& name,
+                 const Vector<std::string>& real_comp_names,
+                 const Vector<std::string>& int_comp_names, F const& f) const
+{
+    if constexpr(ParticleType::is_soa_particle) {
+        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
+    } else {
+        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal);
+    }
+    AMREX_ASSERT( int_comp_names.size() == NStructInt  + NumIntComps() );
+
+    Vector<int> write_real_comp;
+    int nrc = ParticleType::is_soa_particle ? NStructReal + NumRealComps() - AMREX_SPACEDIM : NStructReal + NumRealComps();
+    for (int i = 0; i < nrc; ++i) {
+        write_real_comp.push_back(1);
+    }
+
+    Vector<int> write_int_comp;
+    for (int i = 0; i < NStructInt + NumIntComps(); ++i) {
+        write_int_comp.push_back(1);
+    }
+
+    WriteBinaryParticleData(dir, name,
+                            write_real_comp, write_int_comp,
+                            real_comp_names, int_comp_names, f);
+}
+
+/// \ingroup amrex_io
+template <typename ParticleType, int NArrayReal, int NArrayInt,
+          template<class> class Allocator, class CellAssignor>
+template <class F>
+void
+ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
+::WritePlotFile (const std::string& dir, const std::string& name,
+                 const Vector<std::string>& real_comp_names, F const& f) const
+{
+    if constexpr(ParticleType::is_soa_particle) {
+        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
+    } else {
+        AMREX_ALWAYS_ASSERT(real_comp_names.size() == NumRealComps() + NStructReal);
+    }
+
+    Vector<int> write_real_comp;
+    int nrc = ParticleType::is_soa_particle ? NStructReal + NumRealComps() - AMREX_SPACEDIM : NStructReal + NumRealComps();
+    for (int i = 0; i < nrc; ++i) {
+        write_real_comp.push_back(1);
+    }
+
+    Vector<int> write_int_comp;
+    for (int i = 0; i < NStructInt + NumIntComps(); ++i) {
+        write_int_comp.push_back(1);
+    }
+
+    Vector<std::string> int_comp_names;
+    for (int i = 0; i < NStructInt + NumIntComps(); ++i )
+    {
+        int_comp_names.push_back(getDefaultCompNameInt<ParticleType>(i));
+    }
+
+    WriteBinaryParticleData(dir, name,
+                            write_real_comp, write_int_comp,
+                            real_comp_names, int_comp_names, f);
+}
+
+/// \ingroup amrex_io
+template <typename ParticleType, int NArrayReal, int NArrayInt,
+          template<class> class Allocator, class CellAssignor>
+template <class F>
+void
+ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssignor>
+::WritePlotFile (const std::string& dir,
+                 const std::string& name,
+                 const Vector<int>& write_real_comp,
+                 const Vector<int>& write_int_comp, F const& f) const
+{
+    if constexpr(ParticleType::is_soa_particle) {
+        AMREX_ALWAYS_ASSERT(write_real_comp.size() == NumRealComps() + NStructReal - AMREX_SPACEDIM); // pure SoA: skip positions
+    } else {
+        AMREX_ALWAYS_ASSERT(write_real_comp.size() == NumRealComps() + NStructReal);
+    }
+    AMREX_ASSERT(write_int_comp.size()  == NStructInt  + NumIntComps() );
+
+    Vector<std::string> real_comp_names;
+    int first_rcomp = ParticleType::is_soa_particle ? AMREX_SPACEDIM : 0;
+    for (int i = first_rcomp; i < NStructReal + NumRealComps(); ++i )
+    {
+        real_comp_names.push_back(getDefaultCompNameReal<ParticleType>(i));
+    }
+
+    Vector<std::string> int_comp_names;
+    for (int i = 0; i < NStructInt + NumIntComps(); ++i )
+    {
+        int_comp_names.push_back(getDefaultCompNameInt<ParticleType>(i));
+    }
+
+    WriteBinaryParticleData(dir, name, write_real_comp, write_int_comp,
+                            real_comp_names, int_comp_names, f);
+}
+
+/// \ingroup amrex_io
 template <typename ParticleType, int NArrayReal, int NArrayInt,
           template<class> class Allocator, class CellAssignor>
 template <class F>
@@ -398,14 +408,13 @@ WritePlotFile (const std::string& dir, const std::string& name,
                const Vector<int>& write_int_comp,
                const Vector<std::string>& real_comp_names,
                const Vector<std::string>&  int_comp_names,
-               F&& f) const
+               F const& f) const
 {
     BL_PROFILE("ParticleContainer::WritePlotFile()");
 
     WriteBinaryParticleData(dir, name,
                             write_real_comp, write_int_comp,
-                            real_comp_names, int_comp_names,
-                            std::forward<F>(f));
+                            real_comp_names, int_comp_names, f);
 }
 
 template <typename ParticleType, int NArrayReal, int NArrayInt,
@@ -418,7 +427,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                            const Vector<int>& write_int_comp,
                            const Vector<std::string>& real_comp_names,
                            const Vector<std::string>& int_comp_names,
-                           F&& f, bool is_checkpoint) const
+                           F const& f, bool is_checkpoint) const
 {
     if (AsyncOut::UseAsyncOut()) {
         WriteBinaryParticleDataAsync(*this, dir, name,
@@ -429,7 +438,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
         WriteBinaryParticleDataSync(*this, dir, name,
                                     write_real_comp, write_int_comp,
                                     real_comp_names, int_comp_names,
-                                    std::forward<F>(f), is_checkpoint);
+                                    f, is_checkpoint);
     }
 }
 
@@ -449,13 +458,13 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
     Long nparticles = 0;
     Long  maxnextid  = ParticleType::NextID();
 
-    for (int lev = 0; lev < m_particles.size();  lev++) {
+    for (int lev = 0; lev < std::ssize(m_particles);  lev++) {
         const auto& pmap = m_particles[lev];
         for (const auto& kv : pmap) {
             const auto& aos = kv.second.GetArrayOfStructs();
             for (int k = 0; k < aos.numParticles(); ++k) {
                 const ParticleType& p = aos[k];
-                if (p.id() > 0) {
+                if (p.id().is_valid()) {
                     //
                     // Only count (and checkpoint) valid particles.
                     //
@@ -470,7 +479,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
     ParallelDescriptor::ReduceLongMax(maxnextid, IOProcNumber);
 
     nparticlesPrePost = nparticles;
-    maxnextidPrePost  = int(maxnextid);
+    maxnextidPrePost  = maxnextid;
 
     nParticlesAtLevelPrePost.clear();
     nParticlesAtLevelPrePost.resize(finestLevel() + 1, 0);
@@ -527,7 +536,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                     cnt[whichPrePost[lev][i]] += countPrePost[lev][i];
                 }
 
-                for(int i(0), N = int(cnt.size()); i < N; ++i) {
+                for(int i = 0; i < std::ssize(cnt); ++i) {
                     if(cnt[i] == 0) {
                         std::string FullFileName = NFilesIter::FileName(i, filePrefixPrePost[lev]);
                         FileSystem::Remove(FullFileName);
@@ -574,7 +583,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                   Vector<int>& which, Vector<int>& count, Vector<Long>& where,
                   const Vector<int>& write_real_comp,
                   const Vector<int>& write_int_comp,
-                  const Vector<std::map<std::pair<int, int>, IntVector>>& particle_io_flags,
+                  const Vector<std::map<std::pair<int, int>, FlagsVector>>& particle_io_flags,
                   bool is_checkpoint) const
 {
     BL_PROFILE("ParticleContainer::WriteParticles()");
@@ -604,7 +613,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
         which[grid] = fnum;
         where[grid] = VisMF::FileOffset(ofs);
 
-        if (count[grid] == 0) { continue; }
+        if (count[grid] <= 0) { continue; }
 
         Vector<int> istuff;
         Vector<ParticleReal> rstuff;
@@ -613,10 +622,14 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                                     particle_io_flags, tile_map[grid], count[grid], is_checkpoint);
 
         writeIntData(istuff.dataPtr(), istuff.size(), ofs);
-        ofs.flush();  // Some systems require this flush() (probably due to a bug)
+        if (!VisMF::GetNoFlushAfterWrite()) {
+            ofs.flush();  // Some systems require this flush() (probably due to a bug)
+        }
 
         WriteParticleRealData(rstuff.dataPtr(), rstuff.size(), ofs);
-        ofs.flush();  // Some systems require this flush() (probably due to a bug)
+        if (!VisMF::GetNoFlushAfterWrite()) {
+            ofs.flush();  // Some systems require this flush() (probably due to a bug)
+        }
     }
 }
 
@@ -747,9 +760,13 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
     AMREX_ASSERT(finest_level_in_file >= 0);
 
     // Determine whether this is a dual-grid restart or not.
-    Vector<DistributionMapping> old_dms(finest_level_in_file + 1);
-    Vector<BoxArray> old_bas(finest_level_in_file + 1);
-    Vector<BoxArray> particle_box_arrays(finest_level_in_file + 1);
+    // Size the vectors to cover both the levels present in the checkpoint
+    // file and the levels present in the current container, since the
+    // loops below iterate up to finestLevel()
+    int const max_level = std::max(finest_level_in_file, finestLevel());
+    Vector<DistributionMapping> old_dms(max_level + 1);
+    Vector<BoxArray> old_bas(max_level + 1);
+    Vector<BoxArray> particle_box_arrays(max_level + 1);
     bool dual_grid = false;
 
     bool have_pheaders = false;
@@ -836,7 +853,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
 
             const int rank = ParallelDescriptor::MyProc();
             const int NReaders = MaxReaders();
-            if (rank >= NReaders) { return; }
+            if (rank >= NReaders) { continue; }
 
             const int Navg = ngrids[lev] / NReaders;
             const int Nleft = ngrids[lev] - Navg * NReaders;
@@ -942,7 +959,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
 {
     BL_PROFILE("ParticleContainer::ReadParticles()");
     AMREX_ASSERT(cnt > 0);
-    AMREX_ASSERT(lev < int(m_particles.size()));
+    AMREX_ASSERT(lev < std::ssize(m_particles));
 
     // First read in the integer data in binary.  We do not store
     // the m_lev and m_grid data on disk.  We can easily recreate
@@ -979,7 +996,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
 
     Vector<std::map<std::pair<int, int>, Gpu::HostVector<uint64_t> > > host_idcpu;
     host_idcpu.reserve(15);
-    host_idcpu.resize(finestLevel()+1);
+    host_idcpu.resize(finest_level_in_file+1);
 
     for (int i = 0; i < cnt; i++) {
         // note: for pure SoA particle layouts, we do write the id, cpu and positions as a struct
@@ -1004,7 +1021,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
             ++iptr;
         }
 
-        AMREX_ASSERT(ptemp.id() > 0);
+        AMREX_ASSERT(ptemp.id().is_valid());
 
         AMREX_D_TERM(ptemp.pos(0) = ParticleReal(rptr[0]);,
                      ptemp.pos(1) = ParticleReal(rptr[1]);,
@@ -1045,10 +1062,10 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
             host_particles[lev][ind];
 
             for (int j = 0; j < AMREX_SPACEDIM; j++) {
-                host_real_attribs[pld.m_lev][ind][j].push_back(ptemp.pos(j));
+                host_real_attribs[lev][ind][j].push_back(ptemp.pos(j));
             }
 
-            host_idcpu[pld.m_lev][ind].push_back(ptemp.m_idcpu);
+            host_idcpu[lev][ind].push_back(ptemp.m_idcpu);
 
             // read all other SoA
             // add the real...
@@ -1065,7 +1082,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
         }
     }
 
-    for (int host_lev = 0; host_lev < static_cast<int>(host_particles.size()); ++host_lev)
+    for (int host_lev = 0; host_lev < std::ssize(host_particles); ++host_lev)
     {
         for (auto& kv : host_particles[host_lev]) {
             auto grid = kv.first.first;
@@ -1129,7 +1146,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
     //
     Long nparticles = 0;
 
-    for (int lev = 0; lev < m_particles.size();  lev++) {
+    for (int lev = 0; lev < std::ssize(m_particles);  lev++) {
         auto& pmap = m_particles[lev];
         for (const auto& kv : pmap) {
             const auto& aos = kv.second.GetArrayOfStructs();
@@ -1138,7 +1155,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
             Gpu::copy(Gpu::deviceToHost, aos.begin(), aos.begin() + np, host_aos.begin());
             for (int k = 0; k < np; ++k) {
                 const ParticleType& p = host_aos[k];
-                if (p.id() > 0) {
+                if (p.id().is_valid()) {
                     //
                     // Only count (and checkpoint) valid particles.
                     //
@@ -1206,12 +1223,13 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                 amrex::FileOpenFailed(filename);
             }
 
-            for (int lev = 0; lev < m_particles.size();  lev++) {
+            for (int lev = 0; lev < std::ssize(m_particles);  lev++) {
                 auto& pmap = m_particles[lev];
                 for (const auto& kv : pmap) {
                     ParticleTile<ParticleType, NArrayReal, NArrayInt,
-                                 amrex::PinnedArenaAllocator> pinned_ptile;
-                    pinned_ptile.define(NumRuntimeRealComps(), NumRuntimeIntComps());
+                                 amrex::PolymorphicArenaAllocator> pinned_ptile;
+                    pinned_ptile.define(NumRuntimeRealComps(), NumRuntimeIntComps(),
+                                        nullptr, nullptr, The_Pinned_Arena());
                     pinned_ptile.resize(kv.second.numParticles());
                     amrex::copyParticles(pinned_ptile, kv.second);
                     const auto& host_aos = pinned_ptile.GetArrayOfStructs();
@@ -1220,7 +1238,7 @@ ParticleContainer_impl<ParticleType, NArrayReal, NArrayInt, Allocator, CellAssig
                     auto np = host_aos.numParticles();
                     for (int index = 0; index < np; ++index) {
                         const ParticleType* it = &host_aos[index];
-                        if (it->id() > 0) {
+                        if (it->id().is_valid()) {
 
                             // write out the particle struct first...
                             AMREX_D_TERM(File << it->pos(0) << ' ',

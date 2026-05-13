@@ -17,6 +17,7 @@ ReduceSum (FabArray<FAB> const& fa, int nghost, F&& f) {
     return ReduceSum(fa, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -39,18 +40,20 @@ ReduceSum_host (FabArray<FAB> const& fa, IntVect const& nghost, F const& f)
     return sm;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class OP, class FAB, class F>
 std::enable_if_t<IsBaseFab<FAB>::value,
-                 std::conditional_t<std::is_same<OP,ReduceOpLogicalAnd>::value ||
-                                    std::is_same<OP,ReduceOpLogicalOr>::value,
+                 std::conditional_t<std::is_same_v<OP,ReduceOpLogicalAnd> ||
+                                    std::is_same_v<OP,ReduceOpLogicalOr>,
                                     int, typename FAB::value_type> >
 ReduceMF (FabArray<FAB> const& fa, IntVect const& nghost, F const& f)
 {
-    using T = std::conditional_t<std::is_same<OP,ReduceOpLogicalAnd>::value ||
-                                 std::is_same<OP,ReduceOpLogicalOr>::value,
+    using T = std::conditional_t<std::is_same_v<OP,ReduceOpLogicalAnd> ||
+                                 std::is_same_v<OP,ReduceOpLogicalOr>,
                                  int, typename FAB::value_type>;
     auto typ = fa.ixType();
     auto const& ma = fa.const_arrays();
@@ -63,13 +66,13 @@ ReduceMF (FabArray<FAB> const& fa, IntVect const& nghost, F const& f)
 
 template <class OP, class FAB1, class FAB2, class F>
 std::enable_if_t<IsBaseFab<FAB1>::value && IsBaseFab<FAB2>::value,
-                 std::conditional_t<std::is_same<OP,ReduceOpLogicalAnd>::value ||
-                                    std::is_same<OP,ReduceOpLogicalOr>::value,
+                 std::conditional_t<std::is_same_v<OP,ReduceOpLogicalAnd> ||
+                                    std::is_same_v<OP,ReduceOpLogicalOr>,
                                     int, typename FAB1::value_type> >
 ReduceMF (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, IntVect const& nghost, F const& f)
 {
-    using T = std::conditional_t<std::is_same<OP,ReduceOpLogicalAnd>::value ||
-                                 std::is_same<OP,ReduceOpLogicalOr>::value,
+    using T = std::conditional_t<std::is_same_v<OP,ReduceOpLogicalAnd> ||
+                                 std::is_same_v<OP,ReduceOpLogicalOr>,
                                  int, typename FAB1::value_type>;
     auto typ = fa1.ixType();
     auto const& ma1 = fa1.const_arrays();
@@ -84,14 +87,14 @@ ReduceMF (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, IntVect const& n
 
 template <class OP, class FAB1, class FAB2, class FAB3, class F>
 std::enable_if_t<IsBaseFab<FAB1>::value && IsBaseFab<FAB2>::value && IsBaseFab<FAB3>::value,
-                 std::conditional_t<std::is_same<OP,ReduceOpLogicalAnd>::value ||
-                                    std::is_same<OP,ReduceOpLogicalOr>::value,
+                 std::conditional_t<std::is_same_v<OP,ReduceOpLogicalAnd> ||
+                                    std::is_same_v<OP,ReduceOpLogicalOr>,
                                     int, typename FAB1::value_type> >
 ReduceMF (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
           FabArray<FAB3> const& fa3, IntVect const& nghost, F const& f)
 {
-    using T = std::conditional_t<std::is_same<OP,ReduceOpLogicalAnd>::value ||
-                                 std::is_same<OP,ReduceOpLogicalOr>::value,
+    using T = std::conditional_t<std::is_same_v<OP,ReduceOpLogicalAnd> ||
+                                 std::is_same_v<OP,ReduceOpLogicalOr>,
                                  int, typename FAB1::value_type>;
     auto typ = fa1.ixType();
     auto const& ma1 = fa1.const_arrays();
@@ -121,6 +124,7 @@ ReduceSum_host_wrapper (FabArray<FAB> const& fa, IntVect const& nghost, F&& f)
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -151,6 +155,7 @@ ReduceSum (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return ReduceSum(fa1, fa2, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -175,8 +180,10 @@ ReduceSum_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return sm;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB1::value_type>
@@ -196,6 +203,7 @@ ReduceSum_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -229,6 +237,7 @@ ReduceSum (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, FabArray<FAB3> 
   return ReduceSum(fa1, fa2, fa3, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class FAB3, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -254,8 +263,10 @@ ReduceSum_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return sm;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class FAB3, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB1::value_type>
@@ -275,6 +286,7 @@ ReduceSum_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class FAB3, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -307,6 +319,7 @@ ReduceMin (FabArray<FAB> const& fa, int nghost, F&& f)
     return ReduceMin(fa, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -328,8 +341,10 @@ ReduceMin_host (FabArray<FAB> const& fa, IntVect const& nghost, F const& f)
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB::value_type>
@@ -347,6 +362,7 @@ ReduceMin_host_wrapper (FabArray<FAB> const& fa, IntVect const& nghost, F&& f)
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -377,6 +393,7 @@ ReduceMin (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, int nghost, F&&
     return ReduceMin(fa1, fa2, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -401,8 +418,10 @@ ReduceMin_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB1::value_type>
@@ -422,6 +441,7 @@ ReduceMin_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -455,6 +475,7 @@ ReduceMin (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, FabArray<FAB3> 
     return ReduceMin(fa1, fa2, fa3, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class FAB3, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -480,8 +501,10 @@ ReduceMin_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class FAB3, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB1::value_type>
@@ -501,6 +524,7 @@ ReduceMin_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class FAB3, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -533,6 +557,7 @@ ReduceMax (FabArray<FAB> const& fa, int nghost, F&& f)
     return ReduceMax(fa, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -555,8 +580,10 @@ ReduceMax_host (FabArray<FAB> const& fa, IntVect const& nghost, F const& f)
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB::value_type>
@@ -574,6 +601,7 @@ ReduceMax_host_wrapper (FabArray<FAB> const& fa, IntVect const& nghost, F&& f)
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -604,6 +632,7 @@ ReduceMax (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, int nghost, F&&
     return ReduceMax(fa1, fa2, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -628,8 +657,10 @@ ReduceMax_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB1::value_type>
@@ -649,6 +680,7 @@ ReduceMax_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -682,6 +714,7 @@ ReduceMax (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2, FabArray<FAB3> 
     return ReduceMax(fa1, fa2, fa3, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class FAB3, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -707,8 +740,10 @@ ReduceMax_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class FAB3, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, typename FAB1::value_type>
@@ -728,6 +763,7 @@ ReduceMax_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class FAB3, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -760,6 +796,7 @@ ReduceLogicalAnd (FabArray<FAB> const& fa, int nghost, F&& f)
     return ReduceLogicalAnd(fa, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -781,8 +818,10 @@ ReduceLogicalAnd_host (FabArray<FAB> const& fa, IntVect const& nghost, F const& 
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, bool>
@@ -800,6 +839,7 @@ ReduceLogicalAnd_host_wrapper (FabArray<FAB> const& fa, IntVect const& nghost, F
     return false;
 }
 }
+/// \endcond
 
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -831,6 +871,7 @@ ReduceLogicalAnd (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return ReduceLogicalAnd(fa1, fa2, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -854,8 +895,10 @@ ReduceLogicalAnd_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, bool>
@@ -875,6 +918,7 @@ ReduceLogicalAnd_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& 
     return false;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -907,6 +951,7 @@ ReduceLogicalOr (FabArray<FAB> const& fa, int nghost, F&& f)
     return ReduceLogicalOr(fa, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -928,8 +973,10 @@ ReduceLogicalOr_host (FabArray<FAB> const& fa, IntVect const& nghost, F const& f
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, bool>
@@ -947,6 +994,7 @@ ReduceLogicalOr_host (FabArray<FAB> const& fa, IntVect const& nghost, F&& /*f*/)
     return 0;
 }
 }
+/// \endcond
 
 template <class FAB, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
@@ -978,6 +1026,7 @@ ReduceLogicalOr (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return ReduceLogicalOr(fa1, fa2, IntVect(nghost), std::forward<F>(f));
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -1001,8 +1050,10 @@ ReduceLogicalOr_host (FabArray<FAB1> const& fa1, FabArray<FAB2> const& fa2,
     return r;
 }
 }
+/// \endcond
 
 #ifdef AMREX_USE_GPU
+/// \cond DOXYGEN_IGNORE
 namespace fudetail {
 template <class FAB1, class FAB2, class F>
 std::enable_if_t<!amrex::DefinitelyNotHostRunnable<F>::value, bool>
@@ -1022,6 +1073,7 @@ ReduceLogicalOr_host_wrapper (FabArray<FAB1> const& fa1, FabArray<FAB2> const& f
     return false;
 }
 }
+/// \endcond
 
 template <class FAB1, class FAB2, class F,
           class bar = std::enable_if_t<IsBaseFab<FAB1>::value> >
@@ -1092,7 +1144,74 @@ printCell (FabArray<FAB> const& mf, const IntVect& cell, int comp = -1,
                 }
                 ss << dp[n-1];
                 amrex::AllPrint() << " At cell " << cell << " in Box " << bx
-                                  << ": " << ss.str() << '\n';
+                                  << ": " << ss.view() << '\n';
+            }
+        }
+    }
+}
+
+template <class FAB,
+          class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
+void
+Swap (FabArray<FAB>& dst, FabArray<FAB>& src, int srccomp, int dstcomp, int numcomp, int nghost)
+{
+    Swap(dst,src,srccomp,dstcomp,numcomp,IntVect(nghost));
+}
+
+template <class FAB,
+          class bar = std::enable_if_t<IsBaseFab<FAB>::value> >
+void
+Swap (FabArray<FAB>& dst, FabArray<FAB>& src, int srccomp, int dstcomp, int numcomp, const IntVect& nghost)
+{
+    // We can take a shortcut and do a std::swap if we're swapping all of the data
+    // and they are allocated in the same Arena.
+
+    bool explicit_swap = true;
+
+    if (srccomp == dstcomp && dstcomp == 0 && src.nComp() == dst.nComp() &&
+        src.nGrowVect() == nghost && src.nGrowVect() == dst.nGrowVect() &&
+        src.arena() == dst.arena() && src.hasEBFabFactory() == dst.hasEBFabFactory()) {
+        explicit_swap = false;
+    }
+
+    if (!explicit_swap) {
+
+        std::swap(dst, src);
+
+    } else {
+#ifdef AMREX_USE_GPU
+        if (Gpu::inLaunchRegion() && dst.isFusingCandidate()) {
+            auto const& dstma = dst.arrays();
+            auto const& srcma = src.arrays();
+            ParallelFor(dst, nghost, numcomp,
+            [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+            {
+                const auto tmp                 = dstma[box_no](i,j,k,n+dstcomp);
+                dstma[box_no](i,j,k,n+dstcomp) = srcma[box_no](i,j,k,n+srccomp);
+                srcma[box_no](i,j,k,n+srccomp) = tmp;
+            });
+            if (!Gpu::inNoSyncRegion()) {
+                Gpu::streamSynchronize();
+            }
+        } else
+#endif
+        {
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+            for (MFIter mfi(dst,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+            {
+                const Box& bx = mfi.growntilebox(nghost);
+                if (bx.ok()) {
+                    auto sfab = src.array(mfi);
+                    auto dfab = dst.array(mfi);
+                    AMREX_HOST_DEVICE_PARALLEL_FOR_4D( bx, numcomp, i, j, k, n,
+                    {
+                        const auto tmp        = dfab(i,j,k,n+dstcomp);
+                        dfab(i,j,k,n+dstcomp) = sfab(i,j,k,n+srccomp);
+                        sfab(i,j,k,n+srccomp) = tmp;
+                    });
+                }
             }
         }
     }
@@ -1858,6 +1977,33 @@ void Xpay (MF& dst, typename MF::value_type a, MF const& src, int scomp, int dco
     MF::Xpay(dst, a, src, scomp, dcomp, ncomp, nghost);
 }
 
+//! dst += a_saxpy * src_saxpy followed by dst = src_xpay + a_xpay * dst
+template <class MF, std::enable_if_t<IsMultiFabLike_v<MF>,int> = 0>
+void Saxpy_Xpay (MF& dst, typename MF::value_type a_saxpy, MF const& src_saxpy,
+                 typename MF::value_type a_xpay, MF const& src_xpay, int scomp, int dcomp,
+                 int ncomp, IntVect const& nghost)
+{
+    MF::Saxpy_Xpay(dst, a_saxpy, src_saxpy, a_xpay, src_xpay, scomp, dcomp, ncomp, nghost);
+}
+
+//! dst1 += a1 * src1 followed by dst2 += a2 * src2
+template <class MF, std::enable_if_t<IsMultiFabLike_v<MF>,int> = 0>
+void Saxpy_Saxpy (MF& dst1, typename MF::value_type a1, MF const& src1,
+                  MF& dst2, typename MF::value_type a2, MF const& src2, int scomp, int dcomp,
+                  int ncomp, IntVect const& nghost)
+{
+    MF::Saxpy_Saxpy(dst1, a1, src1, dst2, a2, src2, scomp, dcomp, ncomp, nghost);
+}
+
+//! dst1 += a1 * dst2 followed by dst2 += a2 * src
+template <class MF, std::enable_if_t<IsMultiFabLike_v<MF>,int> = 0>
+void Saypy_Saxpy (MF& dst1, typename MF::value_type a1,
+                  MF& dst2, typename MF::value_type a2, MF const& src, int scomp, int dcomp,
+                  int ncomp, IntVect const& nghost)
+{
+    MF::Saypy_Saxpy(dst1, a1, dst2, a2, src, scomp, dcomp, ncomp, nghost);
+}
+
 //! dst = a*src_a + b*src_b
 template <class MF, std::enable_if_t<IsMultiFabLike_v<MF>,int> = 0>
 void LinComb (MF& dst,
@@ -2027,6 +2173,76 @@ template <class MF, std::size_t N, std::enable_if_t<IsMultiFabLike_v<MF> && (N >
 DistributionMap (Array<MF,N> const& mf)
 {
     return mf[0].DistributionMap();
+}
+
+/*
+ * \brief Return a mask indicating how many duplicates are in each point
+ *
+ * \param fa     input FabArray
+ * \param nghost number of ghost cells included in counting
+ * \param period periodicity
+ */
+template <class FAB>
+FabArray<BaseFab<int>>
+OverlapMask (FabArray<FAB> const& fa, IntVect const& nghost, Periodicity const& period)
+{
+    BL_PROFILE("OverlapMask()");
+
+    const BoxArray& ba = fa.boxArray();
+    const DistributionMapping& dm = fa.DistributionMap();
+
+    FabArray<BaseFab<int>> mask(ba, dm, 1, nghost);
+    mask.setVal(1);
+
+    const std::vector<IntVect>& pshifts = period.shiftIntVect();
+
+    Vector<Array4BoxTag<int> > tags;
+
+    bool run_on_gpu = Gpu::inLaunchRegion();
+    amrex::ignore_unused(run_on_gpu, tags);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (!run_on_gpu)
+#endif
+    {
+        std::vector< std::pair<int,Box> > isects;
+
+        for (MFIter mfi(mask); mfi.isValid(); ++mfi)
+        {
+            const Box& bx = mask[mfi].box();
+            auto const& arr = mask.array(mfi);
+
+            for (const auto& iv : pshifts)
+            {
+                ba.intersections(bx+iv, isects, false, nghost);
+                for (const auto& is : isects)
+                {
+                    Box const& b = is.second-iv;
+                    if (iv == 0 && b == bx) { continue; }
+#ifdef AMREX_USE_GPU
+                    if (run_on_gpu) {
+                        tags.push_back(Array4BoxTag<int>{.dfab = arr, .dbox = b});
+                    } else
+#endif
+                    {
+                        amrex::LoopConcurrentOnCpu(b, [=] (int i, int j, int k) noexcept
+                        {
+                            arr(i,j,k) += 1;
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+#ifdef AMREX_USE_GPU
+    amrex::ParallelFor(tags, 1,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k, int n, Array4BoxTag<int> const& tag) noexcept
+    {
+        Gpu::Atomic::AddNoRet(tag.dfab.ptr(i,j,k,n), 1);
+    });
+#endif
+
+    return mask;
 }
 
 }

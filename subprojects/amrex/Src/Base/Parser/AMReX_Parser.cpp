@@ -6,8 +6,14 @@
 #include <amrex_parser.tab.h>
 
 #include <algorithm>
+#include <mutex>
+#include <stdexcept>
 
 namespace amrex {
+
+namespace {
+    std::mutex parser_mutex;
+}
 
 Parser::Parser (std::string const& func_body)
 {
@@ -21,23 +27,29 @@ Parser::define (std::string const& func_body)
 
     if (!func_body.empty()) {
         m_data->m_expression = func_body;
-        m_data->m_expression.erase(std::remove(m_data->m_expression.begin(),
-                                               m_data->m_expression.end(),'\n'),
-                                   m_data->m_expression.end());
+        m_data->m_expression.erase(
+            std::remove_if(m_data->m_expression.begin(), m_data->m_expression.end(),
+                           [](char c) { return c == '\n' || c == '\r'; }),
+            m_data->m_expression.end());
         std::string f = m_data->m_expression + "\n";
 
+        std::scoped_lock parser_lock(parser_mutex);
         YY_BUFFER_STATE buffer = amrex_parser_scan_string(f.c_str());
         try {
             amrex_parserparse();
         } catch (const std::runtime_error& e) {
+            amrex_parser_delete_buffer(buffer); // delete buffer allocated by bison
+            amrex_parser_delete_ptrs();         // delete ptrs allocated by amrex
             throw std::runtime_error(std::string(e.what()) + " in Parser expression \""
                                      + m_data->m_expression + "\"");
         }
         m_data->m_parser = amrex_parser_new();
         amrex_parser_delete_buffer(buffer);
+        m_ufs = parser_get_user_functions(m_data->m_parser);
     }
 }
 
+/// \cond DOXYGEN_IGNORE
 Parser::Data::~Data ()
 {
     m_expression.clear();
@@ -53,6 +65,7 @@ Parser::Data::~Data ()
     if (m_device_executor) { The_Arena()->free(m_device_executor); }
 #endif
 }
+/// \endcond
 
 Parser::operator bool () const
 {
@@ -63,6 +76,9 @@ void
 Parser::setConstant (std::string const& name, double c)
 {
     if (m_data && m_data->m_parser) {
+        if (m_data->m_host_executor != nullptr) {
+            throw std::runtime_error("amrex::Parser::setConstant: cannot modify constants after compile()");
+        }
         parser_setconst(m_data->m_parser, name.c_str(), c);
     }
 }
@@ -70,6 +86,10 @@ Parser::setConstant (std::string const& name, double c)
 void
 Parser::registerVariables (Vector<std::string> const& vars)
 {
+    if (m_data && m_data->m_host_executor != nullptr) {
+        throw std::runtime_error("amrex::Parser::registerVariables: cannot modify variables after compile()");
+    }
+
     m_vars = vars;
     if (m_data && m_data->m_parser) {
         m_data->m_nvars = static_cast<int>(vars.size());
@@ -77,6 +97,30 @@ Parser::registerVariables (Vector<std::string> const& vars)
             parser_regvar(m_data->m_parser, vars[i].c_str(), i);
         }
     }
+}
+
+void
+Parser::registerUserFn1 (std::string const& name, ParserUserFn1 fh, ParserUserFn1 fd)
+{
+    register_user_fn<1>(name,fh,fd);
+}
+
+void
+Parser::registerUserFn2 (std::string const& name, ParserUserFn2 fh, ParserUserFn2 fd)
+{
+    register_user_fn<2>(name,fh,fd);
+}
+
+void
+Parser::registerUserFn3 (std::string const& name, ParserUserFn3 fh, ParserUserFn3 fd)
+{
+    register_user_fn<3>(name,fh,fd);
+}
+
+void
+Parser::registerUserFn4 (std::string const& name, ParserUserFn4 fh, ParserUserFn4 fd)
+{
+    register_user_fn<4>(name,fh,fd);
 }
 
 void
@@ -127,10 +171,16 @@ Parser::symbols () const
     }
 }
 
+std::map<std::string,int> const&
+Parser::userFunctions () const
+{
+    return m_ufs;
+}
+
 void
 Parser::printExe () const
 {
-    if (m_data->m_host_executor) {
+    if (m_data && m_data->m_host_executor) {
         parser_exe_print(m_data->m_host_executor, m_vars, m_data->m_locals);
     }
 }

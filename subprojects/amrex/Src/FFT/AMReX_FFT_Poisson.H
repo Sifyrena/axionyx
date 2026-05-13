@@ -7,13 +7,58 @@
 namespace amrex::FFT
 {
 
+/**
+ * \file AMReX_FFT_Poisson.H
+ *
+ * FFT-based Poisson solvers (periodic, mixed BC, hybrid, and open BC variants).
+ */
+
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 template <typename MF>
 void fill_physbc (MF& mf, Geometry const& geom,
                   Array<std::pair<Boundary,Boundary>,AMREX_SPACEDIM> const& bc);
+
+inline Geometry shift_geom (Geometry const& geom)
+{
+    auto const& dom = geom.Domain();
+    auto const& dlo = dom.smallEnd();
+    if (dlo == 0) {
+        return geom;
+    } else {
+        return Geometry(amrex::shift(dom,-dlo), geom.ProbDomain(), geom.CoordInt(),
+                        geom.isPeriodic());
+    }
 }
 
+template <typename MF>
+void shift_mfs (IntVect const& domain_lo, MF const& mf1, MF const& mf2,
+                MF& new_mf1, MF& new_mf2)
+{
+    AMREX_ALWAYS_ASSERT(mf1.boxArray() == mf2.boxArray() &&
+                        mf1.DistributionMap() == mf2.DistributionMap());
+    BoxArray ba = mf1.boxArray();
+    ba.shift(-domain_lo);
+    new_mf1.define(ba, mf1.DistributionMap(), 1, mf1.nGrowVect(),
+                   MFInfo().SetAlloc(false));
+    new_mf2.define(ba, mf2.DistributionMap(), 1, mf2.nGrowVect(),
+                   MFInfo().SetAlloc(false));
+    for (MFIter mfi(mf1); mfi.isValid(); ++mfi) {
+        typename MF::fab_type fab1(mf1[mfi], amrex::make_alias, 0, 1);
+        fab1.shift(-domain_lo);
+        new_mf1.setFab(mfi, std::move(fab1));
+
+        typename MF::fab_type fab2(mf2[mfi], amrex::make_alias, 0, 1);
+        fab2.shift(-domain_lo);
+        new_mf2.setFab(mfi, std::move(fab2));
+    }
+}
+
+}
+/// \endcond
+
 /**
+ * \ingroup amrex_fft
  * \brief Poisson solver for periodic, Dirichlet & Neumann boundaries using
  * FFT.
  */
@@ -22,10 +67,18 @@ class Poisson
 {
 public:
 
+    /**
+     * \brief Construct a Poisson solver with explicit boundary types.
+     *
+     * \param geom Geometry describing the domain and metric information.
+     * \param bc   Pair of boundary descriptors (low/high) per coordinate direction.
+     */
     template <typename FA=MF, std::enable_if_t<IsFabArray_v<FA>,int> = 0>
     Poisson (Geometry const& geom,
              Array<std::pair<Boundary,Boundary>,AMREX_SPACEDIM> const& bc)
-        : m_geom(geom), m_bc(bc)
+        : m_domain_lo(geom.Domain().smallEnd()),
+          m_geom(detail::shift_geom(geom)),
+          m_bc(bc)
     {
         bool all_periodic = true;
         for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -40,9 +93,15 @@ public:
         }
     }
 
+    /**
+     * \brief Construct a purely periodic Poisson solver.
+     *
+     * \param geom Periodic geometry (all directions must be periodic).
+     */
     template <typename FA=MF, std::enable_if_t<IsFabArray_v<FA>,int> = 0>
     explicit Poisson (Geometry const& geom)
-        : m_geom(geom),
+        : m_domain_lo(geom.Domain().smallEnd()),
+          m_geom(detail::shift_geom(geom)),
           m_bc{AMREX_D_DECL(std::make_pair(Boundary::periodic,Boundary::periodic),
                             std::make_pair(Boundary::periodic,Boundary::periodic),
                             std::make_pair(Boundary::periodic,Boundary::periodic))}
@@ -54,16 +113,20 @@ public:
         }
     }
 
-    /*
-     * \brief Solve del dot grad soln = rhs
+    /**
+     * \brief Solve del dot grad soln = rhs.
      *
-     * If soln has ghost cells, one layer of ghost cells will be filled
+     * If \p soln has ghost cells, one layer of ghost cells will be filled
      * except for the corners of the physical domain where they are not used
      * in the cross stencil of the operator. The two MFs could be the same MF.
+     *
+     * \param a_soln Solution MultiFab (updated in place).
+     * \param a_rhs  Right-hand side MultiFab.
      */
-    void solve (MF& soln, MF const& rhs);
+    void solve (MF& a_soln, MF const& a_rhs);
 
 private:
+    IntVect m_domain_lo;
     Geometry m_geom;
     Array<std::pair<Boundary,Boundary>,AMREX_SPACEDIM> m_bc;
     std::unique_ptr<R2X<typename MF::value_type>> m_r2x;
@@ -72,6 +135,7 @@ private:
 
 #if (AMREX_SPACEDIM == 3)
 /**
+ * \ingroup amrex_fft
  * \brief Poisson solve for Open BC using FFT.
  */
 template <typename MF = MultiFab>
@@ -79,13 +143,29 @@ class PoissonOpenBC
 {
 public:
 
+    /**
+     * \brief Build an open-boundary FFT solver over the grown domain.
+     *
+     * \param geom    Geometry describing the problem domain.
+     * \param ixtype  Index type (cell vs. node) for the working arrays.
+     * \param ngrow   Number of grow cells applied prior to solving.
+     */
     template <typename FA=MF, std::enable_if_t<IsFabArray_v<FA>,int> = 0>
     explicit PoissonOpenBC (Geometry const& geom,
                             IndexType ixtype = IndexType::TheCellType(),
                             IntVect const& ngrow = IntVect(0));
 
+    /**
+     * \brief Solve the open-boundary Poisson problem.
+     *
+     * \param soln Solution MultiFab (cell- or node-centered to match constructor).
+     * \param rhs  Right-hand-side MultiFab.
+     */
     void solve (MF& soln, MF const& rhs);
 
+    /**
+     * \brief Initialize the discretized Green's function cache (public for CUDA kernels).
+     */
     void define_doit (); // has to be public for cuda
 
 private:
@@ -97,9 +177,10 @@ private:
 #endif
 
 /**
+ * \ingroup amrex_fft
  * \brief 3D Poisson solver for periodic, Dirichlet & Neumann boundaries in
- * the first two dimensions, and Neumann in the last dimension. The last
- * dimension could have non-uniform mesh.
+ * the first two dimensions, and Dirichlet & Neumann in the last
+ * dimension. The last dimension could have non-uniform mesh.
  */
 template <typename MF = MultiFab>
 class PoissonHybrid
@@ -107,10 +188,18 @@ class PoissonHybrid
 public:
     using T = typename MF::value_type;
 
+    /**
+     * \brief Construct the hybrid Poisson solver (mixed BCs in z with optional nonuniform spacing).
+     *
+     * \param geom Geometry describing domain and spacing.
+     * \param bc   Boundary descriptors for each direction.
+     */
     template <typename FA=MF, std::enable_if_t<IsFabArray_v<FA>,int> = 0>
     PoissonHybrid (Geometry const& geom,
                    Array<std::pair<Boundary,Boundary>,AMREX_SPACEDIM> const& bc)
-        : m_geom(geom), m_bc(bc)
+        : m_domain_lo(geom.Domain().smallEnd()),
+          m_geom(detail::shift_geom(geom)),
+          m_bc(bc)
     {
 #if (AMREX_SPACEDIM < 3)
         amrex::Abort("FFT::PoissonHybrid: 1D & 2D todo");
@@ -126,8 +215,13 @@ public:
                                      bc[idim].second != Boundary::periodic));
             }
         }
+        AMREX_ALWAYS_ASSERT(bc[2].first != Boundary::periodic &&
+                            bc[2].second != Boundary::periodic);
         Info info{};
         info.setTwoDMode(true);
+        if (m_geom.Domain().length(0) == 1 || m_geom.Domain().length(1) == 1) {
+            info.setOneDMode(true);
+        }
         if (periodic_xy) {
             m_r2c = std::make_unique<R2C<typename MF::value_type>>(m_geom.Domain(),
                                                                    info);
@@ -138,48 +232,75 @@ public:
         build_spmf();
     }
 
-    template <typename FA=MF, std::enable_if_t<IsFabArray_v<FA>,int> = 0>
-    explicit PoissonHybrid (Geometry const& geom)
-        : m_geom(geom),
-          m_bc{AMREX_D_DECL(std::make_pair(Boundary::periodic,Boundary::periodic),
-                            std::make_pair(Boundary::periodic,Boundary::periodic),
-                            std::make_pair(Boundary::even,Boundary::even))},
-          m_r2c(std::make_unique<R2C<typename MF::value_type>>
-                (geom.Domain(), Info().setTwoDMode(true)))
-    {
-#if (AMREX_SPACEDIM == 3)
-        AMREX_ALWAYS_ASSERT(geom.isPeriodic(0) && geom.isPeriodic(1));
-#else
-        amrex::Abort("FFT::PoissonHybrid: 1D & 2D todo");
-        return;
-#endif
-        build_spmf();
-    }
-
-    /*
-     * \brief Solve del dot grad soln = rhs
+    /**
+     * \brief Solve del dot grad soln = rhs for uniform spacing in all directions.
      *
-     * If soln has ghost cells, one layer of ghost cells will be filled
-     * except for the corners of the physical domain where they are not used
-     * in the cross stencil of the operator. The two MFs could be the same MF.
+     * If \p soln has ghost cells, one layer of ghost cells will be filled
+     * except for the domain-corner ghost zones the stencil does not use.
+     *
+     * \param soln Solution MultiFab.
+     * \param rhs  Right-hand side MultiFab.
      */
     void solve (MF& soln, MF const& rhs);
+    /**
+     * \brief Solve with user-specified layer spacing in the heterogeneous dimension.
+     *
+     * \param soln Solution MultiFab.
+     * \param rhs  Right-hand side MultiFab.
+     * \param dz   Vector of cell spacings along the hybrid dimension.
+     */
     void solve (MF& soln, MF const& rhs, Vector<T> const& dz);
+    /**
+     * \brief GPU-resident overload that accepts device storage for dz.
+     *
+     * \param soln Solution MultiFab.
+     * \param rhs  Right-hand side MultiFab.
+     * \param dz   Device vector of cell spacings along the hybrid dimension.
+     */
     void solve (MF& soln, MF const& rhs, Gpu::DeviceVector<T> const& dz);
 
+    /**
+     * \brief Solve an independent 2-D Poisson problem on every z-plane.
+     *
+     * \param a_soln Solution MultiFab (updated plane-by-plane).
+     * \param a_rhs  Right-hand side MultiFab.
+     */
+    void solve_2d (MF& a_soln, MF const& a_rhs);
+
+    /**
+     * \brief Solve using arbitrary tridiagonal coefficients along the hybrid dimension.
+     *
+     * \param a_soln Solution MultiFab.
+     * \param a_rhs  Right-hand side MultiFab.
+     * \param tria   Functor providing sub-diagonal coefficients.
+     * \param tric   Functor providing super-diagonal coefficients.
+     */
     template <typename TRIA, typename TRIC>
-    void solve (MF& soln, MF const& rhs, TRIA const& tria, TRIC const& tric);
+    void solve (MF& a_soln, MF const& a_rhs, TRIA const& tria, TRIC const& tric);
 
     // This is public for cuda
+    /**
+     * \brief CUDA helper that applies the supplied tridiagonal operator along z.
+     *
+     * \param spmf Spectral MultiFab (either real or complex flavor).
+     * \param tria Sub-diagonal functor.
+     * \param tric Super-diagonal functor.
+     */
     template <typename FA, typename TRIA, typename TRIC>
     void solve_z (FA& spmf, TRIA const& tria, TRIC const& tric);
 
+    /**
+     * \brief Layout information for spectral storage used by the hybrid solver.
+     *
+     * \return BoxArray/DistributionMapping pair describing the complex space decomposition.
+     */
     [[nodiscard]] std::pair<BoxArray,DistributionMapping> getSpectralDataLayout () const;
 
 private:
 
     void build_spmf ();
 
+    IntVect m_domain_lo;
     Geometry m_geom;
     Array<std::pair<Boundary,Boundary>,AMREX_SPACEDIM> m_bc;
     std::unique_ptr<R2X<typename MF::value_type>> m_r2x;
@@ -190,11 +311,20 @@ private:
 };
 
 template <typename MF>
-void Poisson<MF>::solve (MF& soln, MF const& rhs)
+void Poisson<MF>::solve (MF& a_soln, MF const& a_rhs)
 {
     BL_PROFILE("FFT::Poisson::solve");
 
-    AMREX_ASSERT(soln.is_cell_centered() && rhs.is_cell_centered());
+    MF* soln = &a_soln;
+    MF const* rhs = &a_rhs;
+    MF solntmp, rhstmp;
+    if (m_domain_lo != 0) {
+        detail::shift_mfs(m_domain_lo, a_soln, a_rhs, solntmp, rhstmp);
+        soln = &solntmp;
+        rhs = &rhstmp;
+    }
+
+    AMREX_ASSERT(soln->is_cell_centered() && rhs->is_cell_centered());
 
     using T = typename MF::value_type;
 
@@ -249,15 +379,15 @@ void Poisson<MF>::solve (MF& soln, MF const& rhs)
         spectral_data *= scale;
     };
 
-    IntVect const& ng = amrex::elemwiseMin(soln.nGrowVect(), IntVect(1));
+    IntVect const& ng = amrex::elemwiseMin(soln->nGrowVect(), IntVect(1));
 
     if (m_r2x) {
-        m_r2x->forwardThenBackward_doit_0(rhs, soln, f, ng, m_geom.periodicity());
-        detail::fill_physbc(soln, m_geom, m_bc);
+        m_r2x->forwardThenBackward_doit_0(*rhs, *soln, f, ng, m_geom.periodicity());
+        detail::fill_physbc(*soln, m_geom, m_bc);
     } else {
-        m_r2c->forward(rhs);
+        m_r2c->forward(*rhs);
         m_r2c->post_forward_doit_0(f);
-        m_r2c->backward_doit(soln, ng, m_geom.periodicity());
+        m_r2c->backward_doit(*soln, ng, m_geom.periodicity());
     }
 }
 
@@ -313,7 +443,16 @@ void PoissonOpenBC<MF>::solve (MF& soln, MF const& rhs)
 
 #endif /* AMREX_SPACEDIM == 3 */
 
+/// \cond DOXYGEN_IGNORE
 namespace fft_poisson_detail {
+    template <typename T>
+    struct Tri_Zero {
+        [[nodiscard]] constexpr T operator() (int, int, int) const
+        {
+            return 0;
+        }
+    };
+
     template <typename T>
     struct Tri_Uniform {
         [[nodiscard]] AMREX_GPU_DEVICE AMREX_FORCE_INLINE
@@ -329,7 +468,8 @@ namespace fft_poisson_detail {
         [[nodiscard]] AMREX_GPU_DEVICE AMREX_FORCE_INLINE
         T operator() (int, int, int k) const
         {
-            return T(2.0) /(m_dz[k]*(m_dz[k]+m_dz[k-1]));
+            return (k > 0) ? T(2.0) / (m_dz[k]*(m_dz[k]+m_dz[k-1]))
+                           : T(1.0) / (m_dz[k]* m_dz[k]);
         }
         T const* m_dz;
     };
@@ -339,11 +479,14 @@ namespace fft_poisson_detail {
         [[nodiscard]] AMREX_GPU_DEVICE AMREX_FORCE_INLINE
         T operator() (int, int, int k) const
         {
-            return T(2.0) /(m_dz[k]*(m_dz[k]+m_dz[k+1]));
+            return (k < m_size-1) ? T(2.0) / (m_dz[k]*(m_dz[k]+m_dz[k+1]))
+                                  : T(1.0) / (m_dz[k]* m_dz[k]);
         }
         T const* m_dz;
+        int m_size;
     };
 }
+/// \endcond
 
 template <typename MF>
 std::pair<BoxArray,DistributionMapping>
@@ -418,16 +561,23 @@ void PoissonHybrid<MF>::solve (MF& soln, MF const& rhs)
 template <typename MF>
 void PoissonHybrid<MF>::solve (MF& soln, MF const& rhs, Gpu::DeviceVector<T> const& dz)
 {
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        int(dz.size()) == m_geom.Domain().length(2),
+        "FFT::PoissonHybrid: dz.size() must equal domain length in z");
+
     auto const* pdz = dz.dataPtr();
     solve(soln, rhs,
           fft_poisson_detail::TriA<T>{pdz},
-          fft_poisson_detail::TriC<T>{pdz});
+          fft_poisson_detail::TriC<T>{pdz,int(dz.size())});
 }
 
 template <typename MF>
 void PoissonHybrid<MF>::solve (MF& soln, MF const& rhs, Vector<T> const& dz)
 {
     AMREX_ASSERT(soln.is_cell_centered() && rhs.is_cell_centered());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        int(dz.size()) == m_geom.Domain().length(2),
+        "FFT::PoissonHybrid: dz.size() must equal domain length in z");
 
 #ifdef AMREX_USE_GPU
     Gpu::DeviceVector<T> d_dz(dz.size());
@@ -438,44 +588,59 @@ void PoissonHybrid<MF>::solve (MF& soln, MF const& rhs, Vector<T> const& dz)
 #endif
     solve(soln, rhs,
           fft_poisson_detail::TriA<T>{pdz},
-          fft_poisson_detail::TriC<T>{pdz});
+          fft_poisson_detail::TriC<T>{pdz,int(dz.size())});
+}
+
+template <typename MF>
+void PoissonHybrid<MF>::solve_2d (MF& soln, MF const& rhs)
+{
+    solve(soln, rhs, fft_poisson_detail::Tri_Zero<T>{}, fft_poisson_detail::Tri_Zero<T>{});
 }
 
 template <typename MF>
 template <typename TRIA, typename TRIC>
-void PoissonHybrid<MF>::solve (MF& soln, MF const& rhs, TRIA const& tria,
+void PoissonHybrid<MF>::solve (MF& a_soln, MF const& a_rhs, TRIA const& tria,
                                TRIC const& tric)
 {
     BL_PROFILE("FFT::PoissonHybrid::solve");
 
-    AMREX_ASSERT(soln.is_cell_centered() && rhs.is_cell_centered());
+    AMREX_ASSERT(a_soln.is_cell_centered() && a_rhs.is_cell_centered());
 
 #if (AMREX_SPACEDIM < 3)
-    amrex::ignore_unused(soln, rhs, tria, tric);
+    amrex::ignore_unused(a_soln, a_rhs, tria, tric);
 #else
 
-    IntVect const& ng = amrex::elemwiseMin(soln.nGrowVect(), IntVect(1));
+    MF* soln = &a_soln;
+    MF const* rhs = &a_rhs;
+    MF solntmp, rhstmp;
+    if (m_domain_lo != 0) {
+        detail::shift_mfs(m_domain_lo, a_soln, a_rhs, solntmp, rhstmp);
+        soln = &solntmp;
+        rhs = &rhstmp;
+    }
+
+    IntVect const& ng = amrex::elemwiseMin(soln->nGrowVect(), IntVect(1));
 
     if (m_r2c)
     {
-        m_r2c->forward(rhs, m_spmf_c);
+        m_r2c->forward(*rhs, m_spmf_c);
         solve_z(m_spmf_c, tria, tric);
-        m_r2c->backward_doit(m_spmf_c, soln, ng, m_geom.periodicity());
+        m_r2c->backward_doit(m_spmf_c, *soln, ng, m_geom.periodicity());
     }
     else
     {
         if (m_r2x->m_cy.empty()) { // spectral data is real
-            m_r2x->forward(rhs, m_spmf_r);
+            m_r2x->forward(*rhs, m_spmf_r);
             solve_z(m_spmf_r, tria, tric);
-            m_r2x->backward(m_spmf_r, soln, ng, m_geom.periodicity());
+            m_r2x->backward(m_spmf_r, *soln, ng, m_geom.periodicity());
         } else { // spectral data is complex.
-            m_r2x->forward(rhs, m_spmf_c);
+            m_r2x->forward(*rhs, m_spmf_c);
             solve_z(m_spmf_c, tria, tric);
-            m_r2x->backward(m_spmf_c, soln, ng, m_geom.periodicity());
+            m_r2x->backward(m_spmf_c, *soln, ng, m_geom.periodicity());
         }
     }
 
-    detail::fill_physbc(soln, m_geom, m_bc);
+    detail::fill_physbc(*soln, m_geom, m_bc);
 #endif
 }
 
@@ -517,133 +682,184 @@ void PoissonHybrid<MF>::solve_z (FA& spmf, TRIA const& tria, TRIC const& tric)
         }
     }
 
-    bool has_dirichlet = (offset[0] != T(0)) || (offset[1] != T(0));
+    if
+#ifndef _WIN32
+    constexpr
+#endif
+        (std::is_same_v<TRIA,fft_poisson_detail::Tri_Zero<T>> &&
+         std::is_same_v<TRIC,fft_poisson_detail::Tri_Zero<T>>) {
+        amrex::ignore_unused(tria,tric);
+#if defined(AMREX_USE_OMP) && !defined(AMREX_USE_GPU)
+#pragma omp parallel
+#endif
+        for (MFIter mfi(spmf,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+        {
+            auto const& spectral = spmf.array(mfi);
+            auto const& box = mfi.validbox();
+            amrex::ParallelFor(box, [=] AMREX_GPU_DEVICE (int i, int j, int k)
+            {
+                T a = facx*(i+offset[0]);
+                T b = facy*(j+offset[1]);
+                T k2 = dxfac * (std::cos(a)-T(1))
+                    +  dyfac * (std::cos(b)-T(1));
+                if (k2 != T(0)) {
+                    spectral(i,j,k) /= k2;
+                }
+                spectral(i,j,k) *= scale;
+            });
+        }
+    } else {
+        bool zlo_neumann = m_bc[2].first == Boundary::even;
+        bool zhi_neumann = m_bc[2].second == Boundary::even;
+        bool is_singular = (offset[0] == T(0)) && (offset[1] == T(0))
+            && zlo_neumann && zhi_neumann;
 
-    auto nz = m_geom.Domain().length(2);
+        auto nz = m_geom.Domain().length(2);
 
-    for (MFIter mfi(spmf); mfi.isValid(); ++mfi)
-    {
-        auto const& spectral = spmf.array(mfi);
-        auto const& box = mfi.validbox();
-        auto const& xybox = amrex::makeSlab(box, 2, 0);
+#if defined(AMREX_USE_OMP) && !defined(AMREX_USE_GPU)
+#pragma omp parallel
+#endif
+        for (MFIter mfi(spmf); mfi.isValid(); ++mfi)
+        {
+            auto const& spectral = spmf.array(mfi);
+            auto const& box = mfi.validbox();
+            auto const& xybox = amrex::makeSlab(box, 2, 0);
 
 #ifdef AMREX_USE_GPU
-        // xxxxx TODO: We need to explore how to optimize this
-        // function. Maybe we can use cusparse. Maybe we should make
-        // z-direction to be the unit stride direction.
+            // xxxxx TODO: We need to explore how to optimize this
+            // function. Maybe we can use cusparse. Maybe we should make
+            // z-direction to be the unit stride direction.
 
-        FArrayBox tridiag_workspace(box,4);
-        auto const& ald = tridiag_workspace.array(0);
-        auto const& bd = tridiag_workspace.array(1);
-        auto const& cud = tridiag_workspace.array(2);
-        auto const& scratch = tridiag_workspace.array(3);
+            FArrayBox tridiag_workspace(box,4);
+            auto const& ald = tridiag_workspace.array(0);
+            auto const& bd = tridiag_workspace.array(1);
+            auto const& cud = tridiag_workspace.array(2);
+            auto const& scratch = tridiag_workspace.array(3);
 
-        amrex::ParallelFor(xybox, [=] AMREX_GPU_DEVICE (int i, int j, int)
-        {
-            T a = facx*(i+offset[0]);
-            T b = facy*(j+offset[1]);
-            T k2 = dxfac * (std::cos(a)-T(1))
-                +  dyfac * (std::cos(b)-T(1));
+            amrex::ParallelFor(xybox, [=] AMREX_GPU_DEVICE (int i, int j, int)
+            {
+                T a = facx*(i+offset[0]);
+                T b = facy*(j+offset[1]);
+                T k2 = dxfac * (std::cos(a)-T(1))
+                    +  dyfac * (std::cos(b)-T(1));
 
-            // Tridiagonal solve with homogeneous Neumann
-            for(int k=0; k < nz; k++) {
-                if(k==0) {
-                    ald(i,j,k) = T(0.);
-                    cud(i,j,k) = tric(i,j,k);
-                    bd(i,j,k) = k2 -ald(i,j,k)-cud(i,j,k);
-                } else if (k == nz-1) {
-                    ald(i,j,k) = tria(i,j,k);
-                    cud(i,j,k) = T(0.);
-                    bd(i,j,k) = k2 -ald(i,j,k)-cud(i,j,k);
-                    if (i == 0 && j == 0 && !has_dirichlet) {
-                        bd(i,j,k) *= T(2.0);
+                // Tridiagonal solve
+                for(int k=0; k < nz; k++) {
+                    if(k==0) {
+                        ald(i,j,k) = T(0.);
+                        cud(i,j,k) = tric(i,j,k);
+                        if (zlo_neumann) {
+                            bd(i,j,k) = k2 - cud(i,j,k);
+                        } else {
+                            bd(i,j,k) = k2 - cud(i,j,k) - T(2.0)*tria(i,j,k);
+                        }
+                    } else if (k == nz-1) {
+                        ald(i,j,k) = tria(i,j,k);
+                        cud(i,j,k) = T(0.);
+                        if (zhi_neumann) {
+                            bd(i,j,k) = k2 - ald(i,j,k);
+                            if (i == 0 && j == 0 && is_singular) {
+                                bd(i,j,k) *= T(2.0);
+                            }
+                        } else {
+                            bd(i,j,k) = k2 - ald(i,j,k) - T(2.0)*tric(i,j,k);
+                        }
+                    } else {
+                        ald(i,j,k) = tria(i,j,k);
+                        cud(i,j,k) = tric(i,j,k);
+                        bd(i,j,k) = k2 -ald(i,j,k)-cud(i,j,k);
                     }
-                } else {
-                    ald(i,j,k) = tria(i,j,k);
-                    cud(i,j,k) = tric(i,j,k);
-                    bd(i,j,k) = k2 -ald(i,j,k)-cud(i,j,k);
                 }
-            }
 
-            scratch(i,j,0) = cud(i,j,0)/bd(i,j,0);
-            spectral(i,j,0) = spectral(i,j,0)/bd(i,j,0);
+                scratch(i,j,0) = cud(i,j,0)/bd(i,j,0);
+                spectral(i,j,0) = spectral(i,j,0)/bd(i,j,0);
 
-            for (int k = 1; k < nz; k++) {
-                if (k < nz-1) {
-                    scratch(i,j,k) = cud(i,j,k) / (bd(i,j,k) - ald(i,j,k) * scratch(i,j,k-1));
+                for (int k = 1; k < nz; k++) {
+                    if (k < nz-1) {
+                        scratch(i,j,k) = cud(i,j,k) / (bd(i,j,k) - ald(i,j,k) * scratch(i,j,k-1));
+                    }
+                    spectral(i,j,k) = (spectral(i,j,k) - ald(i,j,k) * spectral(i,j,k - 1))
+                        / (bd(i,j,k) - ald(i,j,k) * scratch(i,j,k-1));
                 }
-                spectral(i,j,k) = (spectral(i,j,k) - ald(i,j,k) * spectral(i,j,k - 1))
-                    / (bd(i,j,k) - ald(i,j,k) * scratch(i,j,k-1));
-            }
 
-            for (int k = nz - 2; k >= 0; k--) {
-                spectral(i,j,k) -= scratch(i,j,k) * spectral(i,j,k + 1);
-            }
+                for (int k = nz - 2; k >= 0; k--) {
+                    spectral(i,j,k) -= scratch(i,j,k) * spectral(i,j,k + 1);
+                }
 
-            for (int k = 0; k < nz; ++k) {
-                spectral(i,j,k) *= scale;
-            }
-        });
-        Gpu::streamSynchronize();
+                for (int k = 0; k < nz; ++k) {
+                    spectral(i,j,k) *= scale;
+                }
+            });
+            Gpu::streamSynchronize();
 
 #else
 
-        Gpu::DeviceVector<T> ald(nz);
-        Gpu::DeviceVector<T> bd(nz);
-        Gpu::DeviceVector<T> cud(nz);
-        Gpu::DeviceVector<T> scratch(nz);
+            Gpu::DeviceVector<T> ald(nz);
+            Gpu::DeviceVector<T> bd(nz);
+            Gpu::DeviceVector<T> cud(nz);
+            Gpu::DeviceVector<T> scratch(nz);
 
-        amrex::LoopOnCpu(xybox, [&] (int i, int j, int)
-        {
-            T a = facx*(i+offset[0]);
-            T b = facy*(j+offset[1]);
-            T k2 = dxfac * (std::cos(a)-T(1))
-                +  dyfac * (std::cos(b)-T(1));
+            amrex::LoopOnCpu(xybox, [&] (int i, int j, int)
+            {
+                T a = facx*(i+offset[0]);
+                T b = facy*(j+offset[1]);
+                T k2 = dxfac * (std::cos(a)-T(1))
+                    +  dyfac * (std::cos(b)-T(1));
 
-            // Tridiagonal solve with homogeneous Neumann
-            for(int k=0; k < nz; k++) {
-                if(k==0) {
-                    ald[k] = T(0.);
-                    cud[k] = tric(i,j,k);
-                    bd[k] = k2 -ald[k]-cud[k];
-                } else if (k == nz-1) {
-                    ald[k] = tria(i,j,k);
-                    cud[k] = T(0.);
-                    bd[k] = k2 -ald[k]-cud[k];
-                    if (i == 0 && j == 0 && !has_dirichlet) {
-                        bd[k] *= T(2.0);
+                // Tridiagonal solve
+                for(int k=0; k < nz; k++) {
+                    if(k==0) {
+                        ald[k] = T(0.);
+                        cud[k] = tric(i,j,k);
+                        if (zlo_neumann) {
+                            bd[k] = k2 - cud[k];
+                        } else {
+                            bd[k] = k2 - cud[k] - T(2.0)*tria(i,j,k);
+                        }
+                    } else if (k == nz-1) {
+                        ald[k] = tria(i,j,k);
+                        cud[k] = T(0.);
+                        if (zhi_neumann) {
+                            bd[k] = k2 - ald[k];
+                            if (i == 0 && j == 0 && is_singular) {
+                                bd[k] *= T(2.0);
+                            }
+                        } else {
+                            bd[k] = k2 - ald[k] - T(2.0)*tric(i,j,k);
+                        }
+                    } else {
+                        ald[k] = tria(i,j,k);
+                        cud[k] = tric(i,j,k);
+                        bd[k] = k2 -ald[k]-cud[k];
                     }
-                } else {
-                    ald[k] = tria(i,j,k);
-                    cud[k] = tric(i,j,k);
-                    bd[k] = k2 -ald[k]-cud[k];
                 }
-            }
 
-            scratch[0] = cud[0]/bd[0];
-            spectral(i,j,0) = spectral(i,j,0)/bd[0];
+                scratch[0] = cud[0]/bd[0];
+                spectral(i,j,0) = spectral(i,j,0)/bd[0];
 
-            for (int k = 1; k < nz; k++) {
-                if (k < nz-1) {
-                    scratch[k] = cud[k] / (bd[k] - ald[k] * scratch[k-1]);
+                for (int k = 1; k < nz; k++) {
+                    if (k < nz-1) {
+                        scratch[k] = cud[k] / (bd[k] - ald[k] * scratch[k-1]);
+                    }
+                    spectral(i,j,k) = (spectral(i,j,k) - ald[k] * spectral(i,j,k - 1))
+                        / (bd[k] - ald[k] * scratch[k-1]);
                 }
-                spectral(i,j,k) = (spectral(i,j,k) - ald[k] * spectral(i,j,k - 1))
-                    / (bd[k] - ald[k] * scratch[k-1]);
-            }
 
-            for (int k = nz - 2; k >= 0; k--) {
-                spectral(i,j,k) -= scratch[k] * spectral(i,j,k + 1);
-            }
+                for (int k = nz - 2; k >= 0; k--) {
+                    spectral(i,j,k) -= scratch[k] * spectral(i,j,k + 1);
+                }
 
-            for (int k = 0; k < nz; ++k) {
-                spectral(i,j,k) *= scale;
-            }
-        });
+                for (int k = 0; k < nz; ++k) {
+                    spectral(i,j,k) *= scale;
+                }
+            });
 #endif
+        }
     }
 #endif
 }
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <class T>
@@ -683,7 +899,7 @@ void fill_physbc (MF& mf, Geometry const& geom,
             }
             b &= box;
             if (b.ok() && fbc != Boundary::periodic) {
-                tags.push_back({arr, b, fbc, face});
+                tags.push_back(Tag{.dfab = arr, .dbox = b, .bc = fbc, .face = face});
             }
         }
     }
@@ -715,6 +931,7 @@ void fill_physbc (MF& mf, Geometry const& geom,
 #endif
 }
 }
+/// \endcond
 
 }
 

@@ -179,7 +179,7 @@ struct StructOfArrays {
 
     /** Get access to a particle Int component Array (compile-time and runtime component)
      *
-     * @param index component with 0...NInt-1 compile-time and NInt... runtime arguments
+     * @param name component names with 0...NInt-1 compile-time and NInt... runtime arguments
      * @return
      */
     [[nodiscard]] IntVector& GetIntData (std::string const & name) {
@@ -193,7 +193,7 @@ struct StructOfArrays {
 
     /** Get access to a particle Int component Array (compile-time and runtime component)
      *
-     * @param index component with 0...NInt-1 compile-time and NInt... runtime arguments
+     * @param name component names with 0...NInt-1 compile-time and NInt... runtime arguments
      * @return
      */
     [[nodiscard]] const IntVector& GetIntData (std::string const & name) const {
@@ -267,19 +267,42 @@ struct StructOfArrays {
 
     [[nodiscard]] int getNumNeighbors () const { return m_num_neighbor_particles; }
 
-    void resize (size_t count)
+    void resize (size_t count, GrowthStrategy strategy = GrowthStrategy::Poisson)
     {
         if constexpr (use64BitIdCpu == true) {
-            m_idcpu.resize(count);
+            m_idcpu.resize(count, strategy);
         }
         if constexpr (NReal > 0) {
-            for (int i = 0; i < NReal; ++i) { m_rdata[i].resize(count); }
+            for (int i = 0; i < NReal; ++i) { m_rdata[i].resize(count, strategy); }
         }
         if constexpr (NInt > 0) {
-            for (int i = 0; i < NInt;  ++i) { m_idata[i].resize(count); }
+            for (int i = 0; i < NInt;  ++i) { m_idata[i].resize(count, strategy); }
         }
-        for (int i = 0; i < int(m_runtime_rdata.size()); ++i) { m_runtime_rdata[i].resize(count); }
-        for (int i = 0; i < int(m_runtime_idata.size()); ++i) { m_runtime_idata[i].resize(count); }
+        for (int i = 0; i < int(m_runtime_rdata.size()); ++i) {
+            m_runtime_rdata[i].resize(count, strategy);
+        }
+        for (int i = 0; i < int(m_runtime_idata.size()); ++i) {
+            m_runtime_idata[i].resize(count, strategy);
+        }
+    }
+
+    void reserve (size_t capacity, GrowthStrategy strategy = GrowthStrategy::Poisson)
+    {
+        if constexpr (use64BitIdCpu == true) {
+            m_idcpu.reserve(capacity, strategy);
+        }
+        if constexpr (NReal > 0) {
+            for (int i = 0; i < NReal; ++i) { m_rdata[i].reserve(capacity, strategy); }
+        }
+        if constexpr (NInt > 0) {
+            for (int i = 0; i < NInt;  ++i) { m_idata[i].reserve(capacity, strategy); }
+        }
+        for (int i = 0; i < int(m_runtime_rdata.size()); ++i) {
+            m_runtime_rdata[i].reserve(capacity, strategy);
+        }
+        for (int i = 0; i < int(m_runtime_idata.size()); ++i) {
+            m_runtime_idata[i].reserve(capacity, strategy);
+        }
     }
 
     [[nodiscard]] uint64_t* idcpuarray () {
@@ -308,6 +331,29 @@ struct StructOfArrays {
             arr[i] = m_idata[i].dataPtr();
         }
         return arr;
+    }
+
+    void collectVectors (Vector<IdCPU*>& idcpuv, Vector<RealVector*>& rv,
+                         Vector<IntVector*>& iv)
+
+    {
+        if constexpr (use64BitIdCpu == true) {
+            idcpuv.push_back(&m_idcpu);
+        } else {
+            amrex::ignore_unused(idcpuv);
+        }
+        if constexpr (NReal > 0) {
+            for (int i = 0; i < NReal; ++i) { rv.push_back(&(m_rdata[i])); }
+        }
+        if constexpr (NInt > 0) {
+            for (int i = 0; i < NInt;  ++i) { iv.push_back(&(m_idata[i])); }
+        }
+        for (int i = 0; i < int(m_runtime_rdata.size()); ++i) {
+            rv.push_back(&(m_runtime_rdata[i]));
+        }
+        for (int i = 0; i < int(m_runtime_idata.size()); ++i) {
+            iv.push_back(&(m_runtime_idata[i]));
+        }
     }
 
     int m_num_neighbor_particles{0};

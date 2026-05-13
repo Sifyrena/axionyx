@@ -5,9 +5,16 @@
 #include <AMReX_EBCellFlag.H>
 #include <AMReX_Random.H>
 
+/**
+ * \file AMReX_EBData.H
+ *
+ * Light-weight array views used to pass EB geometry data to GPU kernels.
+ */
+
 namespace amrex
 {
 
+//! Tags that index into EB data arrays stored in EBData/EBDataArrays.
 enum struct EBData_t : int
 {
     levelset,     // level set
@@ -22,9 +29,11 @@ enum struct EBData_t : int
     cellflag      // EBCellFlag
 };
 
+//! Set of Array4 views to EB data for a single box (plus helpers).
 struct EBData
 {
     template <EBData_t T>
+    //! Access scalar EB data entries at cell (i,j,k).
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
     auto get (int i, int j, int k) const noexcept
     {
@@ -35,18 +44,36 @@ struct EBData
         }
     }
 
+    template <EBData_t T>
+    //! Access the Array4 backing EB data \p T.
+    [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    const auto& get () const noexcept
+    {
+        if constexpr (T == EBData_t::cellflag) {
+            return *m_cell_flag;
+        } else {
+            return m_real_data[static_cast<int>(T)];
+        }
+    }
+
     template <EBData_t T, std::enable_if_t<   T == EBData_t::centroid
                                            || T == EBData_t::bndrycent
                                            || T == EBData_t::bndrynorm
                                            AMREX_D_TERM(|| T==EBData_t::fcx,
                                                         || T==EBData_t::fcy,
                                                         || T==EBData_t::fcz), int> = 0>
+    //! Access data at (i,j,k), component \p n.
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
     auto get (int i, int j, int k, int n) const noexcept
     {
         return m_real_data[static_cast<int>(T)](i,j,k,n);
     }
 
+    /**
+     * \brief Generate a uniformly random point on the EB face inside cell (i,j,k).
+     *
+     * Useful for Monte-Carlo flux evaluations or sampling with particles.
+     */
     [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
     GpuArray<Real,AMREX_SPACEDIM>
     randomPointOnEB (int i, int j, int k, RandomEngine const& engine) const
@@ -114,16 +141,16 @@ struct EBData
                 Real y1 = bc1 - ((Real( 0.5)-bc0)*n0+(Real(-0.5)-bc2)*n2)/n1;
                 Real y2 = bc1 - ((Real(-0.5)-bc0)*n0+(Real( 0.5)-bc2)*n2)/n1;
                 Real y3 = bc1 - ((Real( 0.5)-bc0)*n0+(Real( 0.5)-bc2)*n2)/n1;
-                Real ymin = std::min({y0,y1,y2,y3});
-                Real ymax = std::max({y0,y1,y2,y3});
+                Real ymin = amrex::min(y0,y1,y2,y3);
+                Real ymax = amrex::max(y0,y1,y2,y3);
                 ymin = std::max(ymin, Real(-0.5));
                 ymax = std::min(ymax, Real( 0.5));
                 Real z0 = bc2 - ((Real(-0.5)-bc0)*n0+(Real(-0.5)-bc1)*n1)/n2;
                 Real z1 = bc2 - ((Real( 0.5)-bc0)*n0+(Real(-0.5)-bc1)*n1)/n2;
                 Real z2 = bc2 - ((Real(-0.5)-bc0)*n0+(Real( 0.5)-bc1)*n1)/n2;
                 Real z3 = bc2 - ((Real( 0.5)-bc0)*n0+(Real( 0.5)-bc1)*n1)/n2;
-                Real zmin = std::min({z0,z1,z2,z3});
-                Real zmax = std::max({z0,z1,z2,z3});
+                Real zmin = amrex::min(z0,z1,z2,z3);
+                Real zmax = amrex::max(z0,z1,z2,z3);
                 zmin = std::max(zmin, Real(-0.5));
                 zmax = std::min(zmax, Real( 0.5));
                 Real x, y, z;
@@ -173,6 +200,48 @@ struct EBData
 
     Array4<EBCellFlag const> const* m_cell_flag = nullptr;
     Array4<Real const> const* m_real_data = nullptr;
+};
+
+//! Views aggregating EBData for multiple boxes.
+struct EBDataArrays
+{
+    template <EBData_t T>
+    //! Access scalar EB data for box \p box_no at (i,j,k).
+    [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    auto get (int box_no, int i, int j, int k) const noexcept
+    {
+        if constexpr (T == EBData_t::cellflag) {
+            return m_cell_flag[box_no](i,j,k);
+        } else {
+            return m_real_data[(box_no*real_data_size) + static_cast<int>(T)](i,j,k);
+        }
+    }
+
+    template <EBData_t T, std::enable_if_t<   T == EBData_t::centroid
+                                           || T == EBData_t::bndrycent
+                                           || T == EBData_t::bndrynorm
+                                           AMREX_D_TERM(|| T==EBData_t::fcx,
+                                                        || T==EBData_t::fcy,
+                                                        || T==EBData_t::fcz), int> = 0>
+    //! Access data for box \p box_no and at (i,j,k), component \p n.
+    [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    auto get (int box_no, int i, int j, int k, int n) const noexcept
+    {
+        return m_real_data[(box_no*real_data_size) + static_cast<int>(T)](i,j,k,n);
+    }
+
+    //! Return an EBData wrapper anchored at box \p box_no.
+    [[nodiscard]] AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    EBData get (int box_no) const noexcept
+    {
+        return EBData{.m_cell_flag = m_cell_flag + box_no,
+                      .m_real_data = m_real_data + (box_no * real_data_size)};
+    }
+
+    static constexpr int real_data_size = static_cast<int>(EBData_t::cellflag);
+
+    Array4<EBCellFlag const> const * AMREX_RESTRICT m_cell_flag = nullptr;
+    Array4<Real const> const * AMREX_RESTRICT m_real_data = nullptr;
 };
 
 }

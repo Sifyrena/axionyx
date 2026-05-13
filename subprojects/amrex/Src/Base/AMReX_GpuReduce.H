@@ -10,12 +10,11 @@
 #include <AMReX_Functional.H>
 #include <AMReX_TypeTraits.H>
 
-#if !defined(AMREX_USE_CUB) && defined(AMREX_USE_CUDA) && defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ >= 11)
-#define AMREX_USE_CUB 1
-#endif
-
-#if defined(AMREX_USE_CUB)
+#if defined(AMREX_USE_CUDA)
 #include <cub/cub.cuh>
+#if defined(CCCL_MAJOR_VERSION) && defined(CCCL_MINOR_VERSION) && ((CCCL_MAJOR_VERSION >= 3) || ((CCCL_MAJOR_VERSION >= 2) && (CCCL_MINOR_VERSION >= 8)))
+#define AMREX_CUDA_CCCL_VER_GE_2_8 1
+#endif
 #elif defined(AMREX_USE_HIP)
 #include <rocprim/rocprim.hpp>
 #endif
@@ -250,6 +249,7 @@ void deviceReduceLogicalOr (int * dest, int source, Gpu::Handler const& h) noexc
 
 #elif defined(AMREX_USE_CUDA) || defined(AMREX_USE_HIP)
 
+/// \cond DOXYGEN_IGNORE
 namespace detail {
 
 template <typename T>
@@ -276,6 +276,7 @@ T multi_shuffle_down (T x, int offset) noexcept
 }
 
 }
+/// \endcond
 
 template <int warpSize, typename T, typename F>
 struct warpReduce
@@ -361,7 +362,7 @@ template <int BLOCKDIMX, typename T>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
 T blockReduceSum (T source) noexcept
 {
-#if defined(AMREX_USE_CUB)
+#if defined(AMREX_USE_CUDA)
     using BlockReduce = cub::BlockReduce<T,BLOCKDIMX>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     // __syncthreads() prior to writing to shared memory is necessary
@@ -411,7 +412,7 @@ template <int BLOCKDIMX, typename T>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
 T blockReduceMin (T source) noexcept
 {
-#if defined(AMREX_USE_CUB)
+#if defined(AMREX_USE_CUDA)
     using BlockReduce = cub::BlockReduce<T,BLOCKDIMX>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     // __syncthreads() prior to writing to shared memory is necessary
@@ -419,7 +420,12 @@ T blockReduceMin (T source) noexcept
     // and since we don't know how many times the user is calling it,
     // we do it always to be safe.
     __syncthreads();
+
+#ifdef AMREX_CUDA_CCCL_VER_GE_2_8
+    return BlockReduce(temp_storage).Reduce(source, cuda::minimum<T>{});
+#else
     return BlockReduce(temp_storage).Reduce(source, cub::Min());
+#endif
 #elif defined(AMREX_USE_HIP)
     using BlockReduce = rocprim::block_reduce<T,BLOCKDIMX>;
     __shared__ typename BlockReduce::storage_type temp_storage;
@@ -461,7 +467,7 @@ template <int BLOCKDIMX, typename T>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
 T blockReduceMax (T source) noexcept
 {
-#if defined(AMREX_USE_CUB)
+#if defined(AMREX_USE_CUDA)
     using BlockReduce = cub::BlockReduce<T,BLOCKDIMX>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     // __syncthreads() prior to writing to shared memory is necessary
@@ -469,7 +475,11 @@ T blockReduceMax (T source) noexcept
     // and since we don't know how many times the user is calling it,
     // we do it always to be safe.
     __syncthreads();
+#ifdef AMREX_CUDA_CCCL_VER_GE_2_8
+    return BlockReduce(temp_storage).Reduce(source, cuda::maximum<T>());
+#else
     return BlockReduce(temp_storage).Reduce(source, cub::Max());
+#endif
 #elif defined(AMREX_USE_HIP)
     using BlockReduce = rocprim::block_reduce<T,BLOCKDIMX>;
     __shared__ typename BlockReduce::storage_type temp_storage;
@@ -488,8 +498,6 @@ void deviceReduceMax_full (T * dest, T source) noexcept
     T aggregate = blockReduceMax<BLOCKDIMX>(source);
     if (threadIdx.x == 0) { Gpu::Atomic::Max(dest, aggregate); }
 }
-
-// \cond CODEGEN
 
 // Compute the block-wide reduction for thread0
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
@@ -511,7 +519,7 @@ template <int BLOCKDIMX>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
 int blockReduceLogicalAnd (int source) noexcept
 {
-#if defined(AMREX_USE_CUB)
+#if defined(AMREX_USE_CUDA)
     using BlockReduce = cub::BlockReduce<int,BLOCKDIMX>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     // __syncthreads() prior to writing to shared memory is necessary
@@ -559,7 +567,7 @@ template <int BLOCKDIMX>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
 int blockReduceLogicalOr (int source) noexcept
 {
-#if defined(AMREX_USE_CUB)
+#if defined(AMREX_USE_CUDA)
     using BlockReduce = cub::BlockReduce<int,BLOCKDIMX>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     // __syncthreads() prior to writing to shared memory is necessary
@@ -586,8 +594,6 @@ void deviceReduceLogicalOr_full (int * dest, int source) noexcept
     int aggregate = blockReduceLogicalOr<BLOCKDIMX>(source);
     if (threadIdx.x == 0) { Gpu::Atomic::LogicalOr(dest, aggregate); }
 }
-
-// \endcond
 
 template <typename T>
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE

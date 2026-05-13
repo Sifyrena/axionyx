@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://github.com/amrex-codes/amrex-codes.github.io/blob/main/images/AMReX_logo_small_banner_500.png" alt="AMReX Logo">
+<img src="https://github.com/amrex-codes/amrex-codes.github.io/blob/main/images/AMReX-horizontal-color.png" alt="AMReX Logo">
 
 <p align="center">
   <a href="https://doi.org/10.21105/joss.01370">
@@ -11,11 +11,13 @@
   <a href="https://scan.coverity.com/projects/amrex-codes-amrex">
   <img alt="Coverity Scan Build Status" src="https://scan.coverity.com/projects/28563/badge.svg">
   </a>
+  <a href="https://www.bestpractices.dev/projects/11299">
+  <img alt="OpenSSF Beset Practices Status" src="https://www.bestpractices.dev/projects/11299/badge">
+  </a>
   <a href="https://opensource.org/licenses/BSD-3-Clause">
   <img alt="License" src="https://img.shields.io/badge/License-BSD_3--Clause-blue.svg">
   </a>
 </p>
-
 
 <p>
 A software framework for massively parallel block-structured adaptive mesh
@@ -32,6 +34,10 @@ refinement applications.
 [License](#License) -
 [Citation](#Citation)
 
+<a href="https://hpsf.io/">
+<img src="https://github.com/amrex-codes/amrex-codes.github.io/blob/main/images/HPSF_Project_Badge_Established.png" alt="HPSF Badge" style="width:96px;height:96px;">
+</a>
+
 </div>
 
 ## Overview
@@ -41,7 +47,6 @@ applications solving partial differential equations on block-structured meshes. 
 massively parallel adaptive mesh refinement (AMR) algorithms focus computational
 resources and allow scalable performance on heterogeneous architectures so that
 scientists can efficiently resolve details in large simulations.
-AMReX is developed at [LBNL](https://www.lbl.gov/).
 
 More information is available at the [AMReX website](https://amrex-codes.github.io/).
 
@@ -93,6 +98,10 @@ Any level of changes are welcomed: documentation, bug fixes, new test problems,
 new solvers, etc. For more details on how to contribute to AMReX, please see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+If you're using AMReX in your own GitHub projects, consider adding `amrex`
+as a [repository topic](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics)!
+This helps others discover related work and strengthens the AMReX ecosystem.
+
 ## Copyright Notice
 
 AMReX Copyright (c) 2024, The Regents of the University of California,
@@ -111,6 +120,7 @@ License for AMReX can be found at [LICENSE](LICENSE).
 ## Citation
 
 To cite AMReX, please use [![Citing](http://joss.theoj.org/papers/10.21105/joss.01370/status.svg)](https://doi.org/10.21105/joss.01370)
+and [the first IJHPCA paper](https://journals.sagepub.com/doi/full/10.1177/10943420211022811).
 
 ```
 @article{AMReX_JOSS,
@@ -125,5 +135,31 @@ To cite AMReX, please use [![Citing](http://joss.theoj.org/papers/10.21105/joss.
   author = {Weiqun Zhang and Ann Almgren and Vince Beckner and John Bell and Johannes Blaschke and Cy Chan and Marcus Day and Brian Friesen and Kevin Gott and Daniel Graves and Max Katz and Andrew Myers and Tan Nguyen and Andrew Nonaka and Michele Rosso and Samuel Williams and Michael Zingale},
   title = {{AMReX}: a framework for block-structured adaptive mesh refinement},
   journal = {Journal of Open Source Software}
+}
+
+@article{AMReX_IJHPCA1,
+     author = {Zhang, W. and Myers, A. and Gott, K. and Almgren, A. and Bell, J.},
+     title = {{AMReX}: {B}lock-structured adaptive mesh refinement for multiphysics applications},
+     journal = {The International Journal of High Performance Computing Applications},
+     year = {2021},
+     volume = {35},
+     number = {6},
+     pages = {508-526},
+     doi = {10.1177/10943420211022811}
+}
+```
+
+If you have also used pyAMReX and/or you use more modern features of AMReX, please also cite
+[the second IJHPCA paper](https://journals.sagepub.com/doi/full/10.1177/10943420241271017).
+
+```
+@article{AMReX_IJHPCA2,
+     author = {Andrew Myers and Weiqun Zhang and Ann Almgren and Thierry Antoun and John Bell and Axel Huebl and Alexander Sinn},
+     title = {{AMReX} and {pyAMReX}: Looking Beyond the Exascale Computing Project},
+     journal = {The International Journal of High Performance Computing Applications},
+     year = {2024},
+     volume = {38},
+     number = {6},
+     doi = {10.1177/10943420241271017}
 }
 ```

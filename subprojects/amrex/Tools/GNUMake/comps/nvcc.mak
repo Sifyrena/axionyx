@@ -11,17 +11,15 @@ else
   nvcc_minor_version := 9
 endif
 
-# Disallow CUDA toolkit versions < 11
+# Disallow CUDA toolkit versions < 12.2
 
-nvcc_major_lt_11 = $(shell expr $(nvcc_major_version) \< 11)
-ifeq ($(nvcc_major_lt_11),1)
-  $(error Your nvcc version is $(nvcc_version). This is unsupported. Please use CUDA toolkit version 11.0 or newer.)
+ifeq ($(shell expr $(nvcc_major_version) \< 12),1)
+  $(error Your nvcc version is $(nvcc_version). This is unsupported. Please use CUDA toolkit version 12.2 or newer.)
 endif
 
-ifeq ($(shell expr $(nvcc_major_version) \= 11),1)
-ifeq ($(shell expr $(nvcc_minor_version) \= 0),1)
-  # -MP not supported in 11.0
-  DEPFLAGS = -MMD
+ifeq ($(shell expr $(nvcc_major_version) \= 12),1)
+ifeq ($(shell expr $(nvcc_minor_version) \< 2),1)
+  $(error Your nvcc version is $(nvcc_version). This is unsupported. Please use CUDA toolkit version 12.2 or newer.)
 endif
 endif
 
@@ -45,14 +43,14 @@ endif
 
 ifeq ($(lowercase_nvcc_host_comp),gnu)
 
-  ifeq ($(shell expr $(gcc_major_version) \< 8),1)
-    $(error GCC >= 8 required.)
+  ifeq ($(shell expr $(gcc_major_version) \< 11),1)
+    $(error GCC >= 11 required.)
   endif
 
   ifdef CXXSTD
     CXXSTD := $(strip $(CXXSTD))
   else
-    CXXSTD = c++17
+    CXXSTD = c++20
   endif
   CXXFLAGS += -std=$(CXXSTD)
 
@@ -67,21 +65,21 @@ else ifeq ($(lowercase_nvcc_host_comp),pgi)
   ifdef CXXSTD
     CXXSTD := $(strip $(CXXSTD))
   else
-    CXXSTD := c++17
+    CXXSTD := c++20
   endif
 
   CXXFLAGS += -std=$(CXXSTD)
 
   NVCC_CCBIN ?= pgc++
 
-  # In pgi.make, we use gcc_major_version to handle c++17 flag.
+  # In pgi.make, we use gcc_major_version to handle c++20 flag.
   CXXFLAGS_FROM_HOST := -ccbin=$(NVCC_CCBIN) -Xcompiler='$(CXXFLAGS)' --std=$(CXXSTD)
   CFLAGS_FROM_HOST := $(CXXFLAGS_FROM_HOST)
 else
   ifdef CXXSTD
     CXXSTD := $(strip $(CXXSTD))
   else
-    CXXSTD := c++17
+    CXXSTD := c++20
   endif
 
   NVCC_CCBIN ?= $(CXX)
@@ -111,7 +109,11 @@ ifeq ($(GPU_ERROR_CROSS_EXECUTION_SPACE_CALL),TRUE)
 endif
 
 ifeq ($(DEBUG),TRUE)
+ifeq ($(DEBUG_OPT_LEVEL),0)
   NVCC_FLAGS += -g -G
+else
+  NVCC_FLAGS += -g -lineinfo --ptxas-options=-O$(DEBUG_OPT_LEVEL)
+endif
 else
   NVCC_FLAGS += -lineinfo --ptxas-options=-O3
 endif
@@ -124,6 +126,15 @@ ifeq ($(USE_CUPTI),TRUE)
   SYSTEM_INCLUDE_LOCATIONS += $(MAKE_CUDA_PATH)/extras/CUPTI/include
   LIBRARY_LOCATIONS += ${MAKE_CUDA_PATH}/extras/CUPTI/lib64
   LIBRARIES += -Wl,-rpath,${MAKE_CUDA_PATH}/extras/CUPTI/lib64 -lcupti
+endif
+
+ifeq ($(shell expr $(nvcc_major_version) \< 12),1)
+  ifeq ($(PROFILE),TRUE)
+      LIBRARIES += -lnvToolsExt
+  endif
+  ifeq ($(TINY_PROFILE),TRUE)
+      LIBRARIES += -lnvToolsExt
+  endif
 endif
 
 ifneq ($(USE_CUDA_FAST_MATH),FALSE)
@@ -155,15 +166,11 @@ ifeq ($(nvcc_diag_error),1)
   NVCC_FLAGS += --display-error-number --diag-error 20092
 endif
 
-CXXFLAGS = $(CXXFLAGS_FROM_HOST) $(NVCC_FLAGS) $(NVCC_ARCH_COMPILE_FLAGS) -x cu
-CFLAGS   =   $(CFLAGS_FROM_HOST) $(NVCC_FLAGS) $(NVCC_ARCH_COMPILE_FLAGS) -x cu
+CXXFLAGS = $(CXXFLAGS_FROM_HOST) $(NVCC_FLAGS) $(NVCC_ARCH_COMPILE_FLAGS) -x cu -c
+CFLAGS   =   $(CFLAGS_FROM_HOST) $(NVCC_FLAGS) $(NVCC_ARCH_COMPILE_FLAGS) -x cu -c
 
 ifeq ($(USE_GPU_RDC),TRUE)
-  CXXFLAGS += -dc
-  CFLAGS   += -dc
-else
-  CXXFLAGS += -c
-  CFLAGS   += -c
+  NVCC_FLAGS += --relocatable-device-code=true
 endif
 
 CXX = nvcc

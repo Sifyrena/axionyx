@@ -40,7 +40,7 @@ TagBox::coarsen (const IntVect& ratio, const Box& cbox) noexcept
     Array4<char> const& carr = cfab.array();
 
     Box fdomain = domain;
-    Dim3 r{1,1,1};
+    Dim3 r{.x = 1, .y = 1, .z = 1};
     AMREX_D_TERM(r.x = ratio[0];, r.y = ratio[1];, r.z = ratio[2]);
 
     AMREX_HOST_DEVICE_FOR_3D(cbox, i, j, k,
@@ -447,8 +447,8 @@ TagBoxArray::local_collate_gpu (Gpu::PinnedVector<IntVect>& v) const
         const int ncells = fai.fabbox().numPts();
         const char* tags = (*this)[fai].dataPtr();
 #ifdef AMREX_USE_SYCL
-        amrex::launch(nblocks[li], block_size, sizeof(int)*Gpu::Device::warp_size,
-                      Gpu::Device::gpuStream(),
+        amrex::launch<block_size>(nblocks[li], sizeof(int)*Gpu::Device::warp_size,
+                                  Gpu::Device::gpuStream(),
         [=] AMREX_GPU_DEVICE (Gpu::Handler const& h) noexcept
         {
             int bid = h.item->get_group_linear_id();
@@ -467,7 +467,7 @@ TagBoxArray::local_collate_gpu (Gpu::PinnedVector<IntVect>& v) const
             }
         });
 #else
-        amrex::launch(nblocks[li], block_size, Gpu::Device::gpuStream(),
+        amrex::launch<block_size>(nblocks[li], Gpu::Device::gpuStream(),
         [=] AMREX_GPU_DEVICE () noexcept
         {
             int bid = blockIdx.x;
@@ -525,7 +525,7 @@ TagBoxArray::local_collate_gpu (Gpu::PinnedVector<IntVect>& v) const
             const int ncells = bx.numPts();
             const char* tags = (*this)[fai].dataPtr();
 #ifdef AMREX_USE_SYCL
-            amrex::launch(nblocks[li], block_size, sizeof(unsigned int), Gpu::Device::gpuStream(),
+            amrex::launch<block_size>(nblocks[li], sizeof(unsigned int), Gpu::Device::gpuStream(),
             [=] AMREX_GPU_DEVICE (Gpu::Handler const& h) noexcept
             {
                 int bid = h.item->get_group(0);
@@ -553,7 +553,7 @@ TagBoxArray::local_collate_gpu (Gpu::PinnedVector<IntVect>& v) const
                 }
             });
 #else
-            amrex::launch(nblocks[li], block_size, sizeof(unsigned int), Gpu::Device::gpuStream(),
+            amrex::launch<block_size>(nblocks[li], sizeof(unsigned int), Gpu::Device::gpuStream(),
             [=] AMREX_GPU_DEVICE () noexcept
             {
                 int bid = blockIdx.x;
@@ -654,9 +654,10 @@ TagBoxArray::collate (Gpu::PinnedVector<IntVect>& TheGlobalCollateSpace) const
 #if !(defined(__FUJITSU) || defined(__CLANG_FUJITSU))
     ParallelDescriptor::Gatherv(psend, static_cast<int>(count), precv, countvec, offset, IOProcNumber);
 #else
-    const int* psend_int = psend->begin();
-    int* precv_int = precv->begin();
-    Long count_int = count * AMREX_SPACEDIM;
+    const int* psend_int = (count > 0) ? psend->begin() : nullptr;
+    int* precv_int = ParallelDescriptor::IOProcessor() ? precv->begin() : nullptr;
+    AMREX_ALWAYS_ASSERT(count <= (std::numeric_limits<int>::max() / AMREX_SPACEDIM));
+    int count_int = static_cast<int>(count) * AMREX_SPACEDIM;
     auto countvec_int = std::vector<int>(countvec.size());
     auto offset_int = std::vector<int>(offset.size());
     const auto mul_funct = [](const auto el){return el*AMREX_SPACEDIM;};
@@ -693,7 +694,7 @@ TagBoxArray::setVal (const BoxArray& ba, TagBox::TagVal val)
                 Box const& b = is.second;
 #ifdef AMREX_USE_GPU
                 if (run_on_gpu) {
-                    tags.push_back({arr,b});
+                    tags.push_back(Array4BoxTag<char>{.dfab = arr, .dbox = b});
                 } else
 #endif
                 {

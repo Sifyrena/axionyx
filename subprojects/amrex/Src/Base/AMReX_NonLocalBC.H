@@ -54,7 +54,7 @@ struct MultiBlockIndexMapping {
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
             iv_new[d] = sign[d] * (iv[permutation[d]] - offset[d]);
         }
-        return {iv_new[0], iv_new[1], iv_new[2]};
+        return Dim3{.x = iv_new[0], .y = iv_new[1], .z = iv_new[2]};
     }
 
     //! \brief The inverse function is given by rearringing all above terms.
@@ -70,7 +70,7 @@ struct MultiBlockIndexMapping {
             AMREX_ASSERT(sign[d] == 1 || sign[d] == -1);
             iv[permutation[d]] = iv_new[d] * sign[d] + offset[d];
         }
-        return {iv[0], iv[1], iv[2]};
+        return Dim3{.x = iv[0], .y = iv[1], .z = iv[2]};
     }
 
     [[nodiscard]] IndexType operator()(IndexType it) const noexcept {
@@ -94,6 +94,7 @@ struct MultiBlockIndexMapping {
 //! Dim3 is being projected to IntVect by dopping z for AMREX_SPACEDIM = 2 or z and y components
 //! for AMREX_SPACEDIM = 1.
 //!
+//! \param[in] dtos destination to source index mapper
 //! \param[in] iv The IntVect that lives in the destination index space.
 //!
 //! \return Returns IntVect{dtos(Dim3{iv})}
@@ -109,6 +110,7 @@ Apply(DTOS const& dtos, const IntVect& iv)
 //!
 //! This function assumes monotonicity of dtos in each component.
 //!
+//! \param[in] dtos destination to source index mapper
 //! \param[in] box The box that lives the destination index space
 //!
 //! \return Returns the smallest Box in the source index space that contains images of
@@ -132,6 +134,7 @@ Image (DTOS const& dtos, const Box& box)
 //!
 //! This function assumes monotonicity of dtos in each component.
 //!
+//! \param[in] dtos destination to source index mapper
 //! \param[in] box The box that lives the destination index space
 //!
 //! \return Returns the smallest Box in the source index space that contains images of
@@ -155,6 +158,7 @@ Image (DTOS const& dtos, const Box& box)
 //! Dim3 is being projected to IntVect by dopping z for AMREX_SPACEDIM = 2 or z and y components
 //! for AMREX_SPACEDIM = 1.
 //!
+//! \param[in] dtos destination to source index mapper
 //! \param[in] iv The IntVect that lives in the src index space.
 //!
 //! \return Returns IntVect{dtos.Inverse(Dim3{iv})}
@@ -169,6 +173,7 @@ ApplyInverse(DTOS const& dtos, const IntVect& iv)
 //!
 //! This function assumes monotonicity in each component.
 //!
+//! \param[in] dtos destination to source index mapper
 //! \param[in] box The box that lives the source index space
 //!
 //! \return Returns the smallest Box in the destination index space that contains images of
@@ -184,6 +189,7 @@ InverseImage (DTOS const& dtos, const Box& box)
 //!
 //! This function assumes monotonicity in each component.
 //!
+//! \param[in] dtos destination to source index mapper
 //! \param[in] box The box that lives the source index space
 //!
 //! \return Returns the smallest Box in the destination index space that contains images of
@@ -430,6 +436,7 @@ struct CommData {
     Vector<MPI_Status> stats{};
     //! \brief For each request the copy comm tags for the corresponding data FABs.
     Vector<const FabArrayBase::CopyComTagsContainer*> cctc{};
+    std::uint64_t id = std::numeric_limits<std::uint64_t>::max();
 #endif
 };
 
@@ -580,7 +587,7 @@ PackSendBuffers (const PackComponents& components, const FabArray<FAB>& src, Com
 #ifdef AMREX_USE_GPU
     if (Gpu::inLaunchRegion()) {
         FabArray<FAB>::pack_send_buffer_gpu(src, components.src_component, components.n_components,
-                                            send.data, send.size, send.cctc);
+                                            send.data, send.size, send.cctc, send.id);
     } else
 #endif // AMREX_USE_GPU
     {
@@ -870,7 +877,7 @@ ParallelCopy_finish (DoLocalCopy, FabArray<FAB>& dest, const FabArray<FAB>& src,
 //!
 //! \param[in]  destcomp The first component in dest that will get written by src.
 //!
-//! \param[in]  ncomp    The number of successive components that will be copied.
+//! \param[in]  numcomp  The number of successive components that will be copied.
 //!
 //! \param[in]  dtos An index mapping that maps indices from destination space to source space
 //!                  and from source space to destination space.
@@ -914,7 +921,7 @@ ParallelCopy (FabArray<FAB>& dest, const FabArray<FAB>& src, const FabArrayBase:
 //!
 //! \param[in]  destcomp The first component in dest that will get written by src.
 //!
-//! \param[in]  ncomp    The number of successive components that will be copied.
+//! \param[in]  numcomp  The number of successive components that will be copied.
 //!
 //! \param[in]  dtos An index mapping that maps indices from destination space to source space
 //!                  and from source space to destination space.
@@ -945,7 +952,7 @@ ParallelCopy (FabArray<FAB>& dest, const FabArray<FAB>& src, const FabArrayBase:
 //!
 //! \param[in]  destcomp The first component in dest that will get written by src.
 //!
-//! \param[in]  ncomp    The number of successive components that will be copied.
+//! \param[in]  numcomp  The number of successive components that will be copied.
 //!
 //! \param[in]  ngrow    The amount of ghost cells that will be taking into consideration.
 //!                      Note, even if destbox contains indices outside the domain we need to
@@ -984,7 +991,7 @@ ParallelCopy (FabArray<FAB>& dest, const Box& destbox, const FabArray<FAB>& src,
 //!
 //! \param[in]  destcomp The first component in dest that will get written by src.
 //!
-//! \param[in]  ncomp    The number of successive components that will be copied.
+//! \param[in]  numcomp  The number of successive components that will be copied.
 //!
 //! \param[in]  ngrow    The amount of ghost cells that will be taking into consideration.
 //!                      Note, even if destbox contains indices outside the domain we need to
@@ -1047,14 +1054,14 @@ FillPolar (FabArray<FAB>& mf, Box const& domain);
  * This starts communication to fill ghost cells of a FabArray. This
  * function is supposed to be used together with FillBoundary_finish and
  * makeFillBoundaryMetaData as follows.
-\verbatim
-    auto cmd = makeFillBoundaryMetaData(mf, mf.nGrowVect, geom, dtos);
-    // The metadata cmd can be cached and reused on a MultiFab/FabArray with
-    // the same BoxArray and DistributionMapping.
-    auto handler = FillBoundary_nowait(mf, cmd, scomp, ncomp, dtos, proj);
-    // Independent computation can be performed.
-    FillBoundary_finish(std::move(handler), mf, cmd, scomp, ncomp, dtos, proj);
-\endverbatim
+ * \code{.cpp}
+ *     auto cmd = makeFillBoundaryMetaData(mf, mf.nGrowVect, geom, dtos);
+ *     // The metadata cmd can be cached and reused on a MultiFab/FabArray with
+ *     // the same BoxArray and DistributionMapping.
+ *     auto handler = FillBoundary_nowait(mf, cmd, scomp, ncomp, dtos, proj);
+ *     // Independent computation can be performed.
+ *     FillBoundary_finish(std::move(handler), mf, cmd, scomp, ncomp, dtos, proj);
+ * \endcode
  *
  * The FillBoundary capability here is more flexible than FabArray's
  * FillBoundary member functions, which only fill ghost cells inside the
@@ -1093,14 +1100,14 @@ FillBoundary_nowait (FabArray<FAB>& mf, const FabArrayBase::CommMetaData& cmd,
  * This finishes the communication to fill ghost cells of a FabArray. This
  * function is supposed to be used together with FillBoundary_nowait and
  * makeFillBoundaryMetaData as follows.
-\verbatim
-    auto cmd = makeFillBoundaryMetaData(mf, mf.nGrowVect, geom, dtos);
-    // The metadata cmd can be cached and reused on a MultiFab/FabArray with
-    // the same BoxArray and DistributionMapping.
-    auto handler = FillBoundary_nowait(mf, cmd, scomp, ncomp, dtos, proj);
-    // Independent computation can be performed.
-    FillBoundary_finish(std::move(handler), mf, cmd, scomp, ncomp, dtos, proj);
-\endverbatim
+ * \code{.cpp}
+ *     auto cmd = makeFillBoundaryMetaData(mf, mf.nGrowVect, geom, dtos);
+ *     // The metadata cmd can be cached and reused on a MultiFab/FabArray with
+ *     // the same BoxArray and DistributionMapping.
+ *     auto handler = FillBoundary_nowait(mf, cmd, scomp, ncomp, dtos, proj);
+ *     // Independent computation can be performed.
+ *     FillBoundary_finish(std::move(handler), mf, cmd, scomp, ncomp, dtos, proj);
+ * \endcode
  *
  * The FillBoundary capability here is more flexible than FabArray's
  * FillBoundary member functions, which only fill ghost cells inside the
@@ -1136,12 +1143,12 @@ FillBoundary_finish (CommHandler handler,
  *
  * This fills ghost cells of a FabArray. This function is supposed to be
  * used together with makeFillBoundaryMetaData as follows.
-\verbatim
-    auto cmd = makeFillBoundaryMetaData(mf, mf.nGrowVect, geom, dtos);
-    // The metadata cmd can be cached and reused on a MultiFab/FabArray with
-    // the same BoxArray and DistributionMapping.
-    FillBoundary(mf, cmd, scomp, ncomp, dtos, proj);
-\endverbatim
+ * \code{.cpp}
+ *     auto cmd = makeFillBoundaryMetaData(mf, mf.nGrowVect, geom, dtos);
+ *     // The metadata cmd can be cached and reused on a MultiFab/FabArray with
+ *     // the same BoxArray and DistributionMapping.
+ *     FillBoundary(mf, cmd, scomp, ncomp, dtos, proj);
+ * \endcode
  *
  * The FillBoundary capability here is more flexible than FabArray's
  * FillBoundary member functions, which only fill ghost cells inside the

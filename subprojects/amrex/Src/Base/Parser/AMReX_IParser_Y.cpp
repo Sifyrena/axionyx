@@ -4,7 +4,7 @@
 
 #include <algorithm>
 #include <cstdarg>
-#include <string>
+#include <vector>
 
 void
 amrex_iparsererror (char const *s, ...)
@@ -20,22 +20,29 @@ amrex_iparsererror (char const *s, ...)
 namespace amrex {
 
 namespace {
-    struct iparser_node* iparser_root = nullptr;
+    struct IParserWorkspace {
+        struct iparser_node* root = nullptr;
+        std::vector<void*> ptrs;
+    };
+
+    thread_local IParserWorkspace iparser_workspace;
 }
 
 // This is called by a bison rule to store the original AST in a static variable.
 void
 iparser_defexpr (struct iparser_node* body)
 {
-    iparser_root = body;
+    iparser_workspace.root = body;
 }
 
 struct iparser_symbol*
 iparser_makesymbol (char* name)
 {
-    auto *symbol = (struct iparser_symbol*) std::malloc(sizeof(struct iparser_symbol));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_symbol)));
+    auto *symbol = (struct iparser_symbol*) iparser_workspace.ptrs.back();
     symbol->type = IPARSER_SYMBOL;
     symbol->name = strdup(name);
+    iparser_workspace.ptrs.push_back((void*)symbol->name);
     symbol->ip = -1;
     return symbol;
 }
@@ -43,7 +50,8 @@ iparser_makesymbol (char* name)
 struct iparser_node*
 iparser_newnode (enum iparser_node_t type, struct iparser_node* l, struct iparser_node* r)
 {
-    auto *tmp = (struct iparser_node*) std::malloc(sizeof(struct iparser_node));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_node)));
+    auto *tmp = (struct iparser_node*) iparser_workspace.ptrs.back();
     tmp->type = type;
     tmp->l = l;
     tmp->r = r;
@@ -53,7 +61,8 @@ iparser_newnode (enum iparser_node_t type, struct iparser_node* l, struct iparse
 struct iparser_node*
 iparser_newnumber (long long d)
 {
-    auto *r = (struct iparser_number*) std::malloc(sizeof(struct iparser_number));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_number)));
+    auto *r = (struct iparser_number*) iparser_workspace.ptrs.back();
     r->type = IPARSER_NUMBER;
     r->value = d;
     return (struct iparser_node*) r;
@@ -68,7 +77,8 @@ iparser_newsymbol (struct iparser_symbol* symbol)
 struct iparser_node*
 iparser_newf1 (enum iparser_f1_t ftype, struct iparser_node* l)
 {
-    auto *tmp = (struct iparser_f1*) std::malloc(sizeof(struct iparser_f1));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_f1)));
+    auto *tmp = (struct iparser_f1*) iparser_workspace.ptrs.back();
     tmp->type = IPARSER_F1;
     tmp->l = l;
     tmp->ftype = ftype;
@@ -78,7 +88,8 @@ iparser_newf1 (enum iparser_f1_t ftype, struct iparser_node* l)
 struct iparser_node*
 iparser_newf2 (enum iparser_f2_t ftype, struct iparser_node* l, struct iparser_node* r)
 {
-    auto *tmp = (struct iparser_f2*) std::malloc(sizeof(struct iparser_f2));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_f2)));
+    auto *tmp = (struct iparser_f2*) iparser_workspace.ptrs.back();
     tmp->type = IPARSER_F2;
     tmp->l = l;
     tmp->r = r;
@@ -90,7 +101,8 @@ struct iparser_node*
 iparser_newf3 (enum iparser_f3_t ftype, struct iparser_node* n1, struct iparser_node* n2,
                struct iparser_node* n3)
 {
-    auto *tmp = (struct iparser_f3*) std::malloc(sizeof(struct iparser_f3));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_f3)));
+    auto *tmp = (struct iparser_f3*) iparser_workspace.ptrs.back();
     tmp->type = IPARSER_F3;
     tmp->n1 = n1;
     tmp->n2 = n2;
@@ -102,7 +114,8 @@ iparser_newf3 (enum iparser_f3_t ftype, struct iparser_node* n1, struct iparser_
 struct iparser_node*
 iparser_newassign (struct iparser_symbol* sym, struct iparser_node* v)
 {
-    auto *r = (struct iparser_assign*) std::malloc(sizeof(struct iparser_assign));
+    iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_assign)));
+    auto *r = (struct iparser_assign*) iparser_workspace.ptrs.back();
     r->type = IPARSER_ASSIGN;
     r->s = sym;
     r->v = v;
@@ -115,11 +128,56 @@ iparser_newlist (struct iparser_node* nl, struct iparser_node* nr)
     if (nr == nullptr) {
         return nl;
     } else {
-        auto *r = (struct iparser_node*) std::malloc(sizeof(struct iparser_node));
+        iparser_workspace.ptrs.push_back(std::malloc(sizeof(struct iparser_node)));
+        auto *r = (struct iparser_node*) iparser_workspace.ptrs.back();
         r->type = IPARSER_LIST;
         r->l = nl;
         r->r = nr;
         return r;
+    }
+}
+
+namespace {
+struct iparser_node* iparser_get_rightmost_operand (struct iparser_node* node)
+{
+    if (node && node->type == IPARSER_F2) {
+        auto ftype = ((struct iparser_f2*)node)->ftype;
+        if (ftype == IPARSER_CMP_CHAIN) {
+            return iparser_get_rightmost_operand(node->r);
+        } else if (ftype == IPARSER_LT || ftype == IPARSER_GT ||
+                   ftype == IPARSER_LEQ || ftype == IPARSER_GEQ ||
+                   ftype == IPARSER_EQ || ftype == IPARSER_NEQ) {
+            return node->r;
+        }
+    }
+    return nullptr;
+}
+
+bool iparser_is_comparison (struct iparser_node* node)
+{
+    if (node && node->type == IPARSER_F2) {
+        auto ftype = ((struct iparser_f2*)node)->ftype;
+        return (ftype == IPARSER_LT || ftype == IPARSER_GT ||
+                ftype == IPARSER_LEQ || ftype == IPARSER_GEQ ||
+                ftype == IPARSER_EQ || ftype == IPARSER_NEQ ||
+                (ftype == IPARSER_CMP_CHAIN && iparser_is_comparison(node->r)));
+    } else {
+        return false;
+    }
+}
+}
+
+struct iparser_node* iparser_newcmpchain (struct iparser_node* nl, enum iparser_f2_t cmp,
+                                          struct iparser_node* nr)
+{
+    /* If left side is already a comparison, this extends the chain */
+    if (amrex::iparser_is_comparison(nl)) {
+       return amrex::iparser_newf2(amrex::IPARSER_CMP_CHAIN, nl,
+                                   amrex::iparser_newf2(cmp,
+                                                        amrex::iparser_get_rightmost_operand(nl),
+                                                        nr));
+    } else {
+        return amrex::iparser_newf2(cmp, nl, nr); // Initial comparison
     }
 }
 
@@ -130,11 +188,13 @@ amrex_iparser_new ()
 {
     auto *my_iparser = (struct amrex_iparser*) std::malloc(sizeof(struct amrex_iparser));
 
-    my_iparser->sz_mempool = iparser_ast_size(iparser_root);
+    my_iparser->sz_mempool = iparser_ast_size(iparser_workspace.root);
     my_iparser->p_root = std::malloc(my_iparser->sz_mempool);
     my_iparser->p_free = my_iparser->p_root;
 
-    my_iparser->ast = iparser_ast_dup(my_iparser, iparser_root, 1); /* 1: free the source iparser_root */
+    my_iparser->ast = iparser_ast_dup(my_iparser, iparser_workspace.root);
+
+    amrex_iparser_delete_ptrs();
 
     if ((char*)my_iparser->p_root + my_iparser->sz_mempool != (char*)my_iparser->p_free) {
         amrex::Abort("amrex_iparser_new: error in memory size");
@@ -150,6 +210,16 @@ amrex_iparser_delete (struct amrex_iparser* iparser)
 {
     std::free(iparser->p_root);
     std::free(iparser);
+}
+
+void
+amrex_iparser_delete_ptrs ()
+{
+    for (auto* p : iparser_workspace.ptrs) {
+        std::free(p);
+    }
+    iparser_workspace.ptrs.clear();
+    iparser_workspace.root = nullptr;
 }
 
 namespace {
@@ -171,19 +241,6 @@ iparser_allocate (struct amrex_iparser* my_iparser, std::size_t N)
     return r;
 }
 
-}
-
-struct amrex_iparser*
-iparser_dup (struct amrex_iparser* source)
-{
-    auto *dest = (struct amrex_iparser*) std::malloc(sizeof(struct amrex_iparser));
-    dest->sz_mempool = source->sz_mempool;
-    dest->p_root = std::malloc(dest->sz_mempool);
-    dest->p_free = dest->p_root;
-
-    dest->ast = iparser_ast_dup(dest, source->ast, 0); /* 0: don't free the source */
-
-    return dest;
 }
 
 std::size_t
@@ -256,7 +313,7 @@ iparser_ast_size (struct iparser_node* node)
 }
 
 struct iparser_node*
-iparser_ast_dup (struct amrex_iparser* my_iparser, struct iparser_node* node, int move)
+iparser_ast_dup (struct amrex_iparser* my_iparser, struct iparser_node* node)
 {
     void* result = nullptr;
 
@@ -288,47 +345,47 @@ iparser_ast_dup (struct amrex_iparser* my_iparser, struct iparser_node* node, in
     case IPARSER_LIST:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_node));
         std::memcpy(result, node            , sizeof(struct iparser_node));
-        ((struct iparser_node*)result)->l = iparser_ast_dup(my_iparser, node->l, move);
-        ((struct iparser_node*)result)->r = iparser_ast_dup(my_iparser, node->r, move);
+        ((struct iparser_node*)result)->l = iparser_ast_dup(my_iparser, node->l);
+        ((struct iparser_node*)result)->r = iparser_ast_dup(my_iparser, node->r);
         break;
     case IPARSER_NEG:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_node));
         std::memcpy(result, node            , sizeof(struct iparser_node));
-        ((struct iparser_node*)result)->l = iparser_ast_dup(my_iparser, node->l, move);
+        ((struct iparser_node*)result)->l = iparser_ast_dup(my_iparser, node->l);
         ((struct iparser_node*)result)->r = nullptr;
         break;
     case IPARSER_F1:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_f1));
         std::memcpy(result, node            , sizeof(struct iparser_f1));
         ((struct iparser_f1*)result)->l = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_f1*)node)->l, move);
+                                                   ((struct iparser_f1*)node)->l);
         break;
     case IPARSER_F2:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_f2));
         std::memcpy(result, node            , sizeof(struct iparser_f2));
         ((struct iparser_f2*)result)->l = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_f2*)node)->l, move);
+                                                   ((struct iparser_f2*)node)->l);
         ((struct iparser_f2*)result)->r = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_f2*)node)->r, move);
+                                                   ((struct iparser_f2*)node)->r);
         break;
     case IPARSER_F3:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_f3));
         std::memcpy(result, node            , sizeof(struct iparser_f3));
         ((struct iparser_f3*)result)->n1 = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_f3*)node)->n1, move);
+                                                   ((struct iparser_f3*)node)->n1);
         ((struct iparser_f3*)result)->n2 = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_f3*)node)->n2, move);
+                                                   ((struct iparser_f3*)node)->n2);
         ((struct iparser_f3*)result)->n3 = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_f3*)node)->n3, move);
+                                                   ((struct iparser_f3*)node)->n3);
         break;
     case IPARSER_ASSIGN:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_assign));
         std::memcpy(result, node            , sizeof(struct iparser_assign));
         ((struct iparser_assign*)result)->s = (struct iparser_symbol*)
             iparser_ast_dup(my_iparser, (struct iparser_node*)
-                                                  (((struct iparser_assign*)node)->s), move);
+                                                  (((struct iparser_assign*)node)->s));
         ((struct iparser_assign*)result)->v = iparser_ast_dup(my_iparser,
-                                                   ((struct iparser_assign*)node)->v, move);
+                                                   ((struct iparser_assign*)node)->v);
         break;
     case IPARSER_ADD_VP:
     case IPARSER_SUB_VP:
@@ -337,25 +394,15 @@ iparser_ast_dup (struct amrex_iparser* my_iparser, struct iparser_node* node, in
     case IPARSER_DIV_PV:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_node));
         std::memcpy(result, node            , sizeof(struct iparser_node));
-        ((struct iparser_node*)result)->r = iparser_ast_dup(my_iparser, node->r, move);
+        ((struct iparser_node*)result)->r = iparser_ast_dup(my_iparser, node->r);
         break;
     case IPARSER_NEG_P:
         result = iparser_allocate(my_iparser, sizeof(struct iparser_node));
         std::memcpy(result, node            , sizeof(struct iparser_node));
-        ((struct iparser_node*)result)->l = iparser_ast_dup(my_iparser, node->l, move);
+        ((struct iparser_node*)result)->l = iparser_ast_dup(my_iparser, node->l);
         break;
     default:
         amrex::Abort("iparser_ast_dup: unknown node type " + std::to_string(node->type));
-    }
-    if (move) {
-        /* Note that we only do this on the original AST.  We do not
-         * need to call free for AST stored in amrex_iparser because the
-         * memory is not allocated with std::malloc directly.
-         */
-        if (node->type == IPARSER_SYMBOL) {
-            std::free(((struct iparser_symbol*)node)->name);
-        }
-        std::free((void*)node);
     }
     return (struct iparser_node*)result;
 }
@@ -886,6 +933,9 @@ iparser_ast_optimize (struct iparser_node* node)
     case IPARSER_F2:
         iparser_ast_optimize(node->l);
         iparser_ast_optimize(node->r);
+        if (((struct iparser_f2*)node)->ftype == IPARSER_CMP_CHAIN) {
+            ((struct iparser_f2*)node)->ftype = IPARSER_AND;
+        }
         if (node->l->type == IPARSER_NUMBER &&
             node->r->type == IPARSER_NUMBER)
         {
@@ -1023,6 +1073,7 @@ iparser_ast_print_f2 (struct iparser_f2* f2, std::string const& space, AllPrint&
     case IPARSER_NEQ:
         printer << "NEQ\n";
         break;
+    case IPARSER_CMP_CHAIN:
     case IPARSER_AND:
         printer << "AND\n";
         break;

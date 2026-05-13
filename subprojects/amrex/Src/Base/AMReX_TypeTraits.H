@@ -61,6 +61,14 @@ namespace amrex
     template <> struct HasAtomicAdd<float> : std::true_type {};
     template <> struct HasAtomicAdd<double> : std::true_type {};
 
+    // support +=?
+    template <class T, class Enable = void>
+    struct IsAddAssignable : std::false_type {};
+    //
+    template <class T>
+    struct IsAddAssignable<T, std::void_t<decltype(std::declval<T&>() += std::declval<T>())>>
+        : std::true_type {};
+
     class MFIter;
     template <typename T>
     struct IsMultiFabIterator : public std::is_base_of<MFIter, T>::type {};
@@ -87,6 +95,9 @@ namespace amrex
     struct IsParticleContainer : public std::is_base_of<ParticleContainerBase, T>::type {};
 #endif
 
+    template <class T, class Enable = void>
+    struct DefinitelyNotHostRunnable : std::false_type {};
+
 #ifdef AMREX_USE_GPU
 
     template <class T, class Enable = void>
@@ -94,9 +105,6 @@ namespace amrex
 
     template <class T, class Enable = void>
     struct MaybeHostDeviceRunnable : std::true_type {};
-
-    template <class T, class Enable = void>
-    struct DefinitelyNotHostRunnable : std::false_type {};
 
 #if defined(AMREX_USE_CUDA) && defined(__NVCC__)
 
@@ -142,6 +150,7 @@ namespace amrex
     //
     // https://en.cppreference.com/w/cpp/experimental/is_detected
 
+    /// \cond DOXYGEN_IGNORE
     namespace detail {
         template <class...> using Void_t = void;
 
@@ -167,6 +176,7 @@ namespace amrex
             using type = Op<Args...>;
         };
     }
+    /// \endcond
 
     template <template <class...> class Op, class... Args>
     using IsDetected = typename detail::Detector<detail::Nonesuch, void, Op, Args...>::value_t;
@@ -183,10 +193,12 @@ namespace amrex
     ////////////////////////////////////////////////////////////////////////////////
     //                                                           [traits.IsCallable]
 
+    /// \cond DOXYGEN_IGNORE
     namespace detail {
         template <typename T, typename... Args>
         using call_result_t = decltype(std::declval<T>()(std::declval<Args>()...));
     }
+    /// \endcond
 
     //! \brief Test if a given type T is callable with arguments of type Args...
     //!
@@ -241,25 +253,29 @@ namespace amrex
     ////////////////////////////////////////////////////////////////////////////////
     //                                                        [traits.IsConvertible]
 
-    namespace detail {
-        template<typename T>
-        inline constexpr bool is_convertible(T) {return true;}
-
-        template <typename T, typename U, typename Enable = void>
-        struct IsConvertibleImp : std::false_type {};
-
-        template <typename T, typename U>
-        struct IsConvertibleImp<T, U, std::enable_if_t<is_convertible<T>(U{})>> : std::true_type {};
-    }
-
     //! \brief Test if all the types Args... are automatically convertible to type T
     template <typename T, typename... Args>
-    struct IsConvertible {
-        static constexpr bool value = (... && detail::IsConvertibleImp<T, Args>::value);
-    };
+    using IsConvertible = std::conjunction<std::is_convertible<Args, T>...>;
 
     template <typename T, typename... Args>
-    inline constexpr bool IsConvertible_v = IsConvertible<T, Args...>::value;
+    inline constexpr bool IsConvertible_v = IsConvertible<T, Args...>::value; // NOLINT(modernize-type-traits)
+
+    namespace detail {
+        template <typename T, typename U, typename Enable = void>
+        struct IsNarrowingConversionImp : std::true_type {};
+
+        template <typename T, typename U>
+        struct IsNarrowingConversionImp<T, U, std::void_t<decltype(U{std::declval<T>()})>> : std::false_type {};
+    }
+
+    template <typename From, typename To>
+    struct IsNarrowingConversion : detail::IsNarrowingConversionImp<From, To> {};
+
+    template <typename From, typename To>
+    inline constexpr bool IsNarrowingConversion_v = IsNarrowingConversion<From, To>::value;
+
+    template <typename From, typename To>
+    inline constexpr bool IsNonNarrowingConversion_v = !IsNarrowingConversion<From, To>::value;
 
     // Move this down, because doxygen can not parse anything below IsStoreAtomic
     template <class T, class Enable = void>
@@ -270,16 +286,6 @@ namespace amrex
                                 std::is_arithmetic_v<T>
                                 && sizeof(T) <= 8 > >
         : std::true_type {};
-
-    template <class T, class Enable = void>
-    struct IsStdVector : std::false_type {};
-    //
-    template <class T>
-    struct IsStdVector<T, std::enable_if_t<std::is_base_of_v<std::vector<typename T::value_type,
-                                                                       typename T::allocator_type>,
-                                                           T>> >
-                       : std::true_type {};
-
 }
 
 #endif

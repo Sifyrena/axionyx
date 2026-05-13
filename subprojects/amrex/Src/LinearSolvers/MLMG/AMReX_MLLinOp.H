@@ -20,9 +20,11 @@
 #include <AMReX_BndryRegister.H>
 #include <AMReX_FabDataType.H>
 #include <AMReX_MLMGBndry.H>
+#include <AMReX_MultiFab.H>
 #include <AMReX_MultiFabUtil.H>
 
 #include <algorithm>
+#include <iterator>
 #include <string>
 
 namespace amrex {
@@ -45,6 +47,7 @@ struct LPInfo
     int max_semicoarsening_level = 0;
     int semicoarsening_direction = -1;
     int hidden_direction = -1;
+    bool deterministic = false;   //!< Enable deterministic mode for GPU operations
 
     LPInfo& setAgglomeration (bool x) noexcept { do_agglomeration = x; return *this; }
     LPInfo& setConsolidation (bool x) noexcept { do_consolidation = x; return *this; }
@@ -58,6 +61,7 @@ struct LPInfo
     LPInfo& setMaxSemicoarseningLevel (int n) noexcept { max_semicoarsening_level = n; return *this; }
     LPInfo& setSemicoarseningDirection (int n) noexcept { semicoarsening_direction = n; return *this; }
     LPInfo& setHiddenDirection (int n) noexcept { hidden_direction = n; return *this; }
+    LPInfo& setDeterministic (bool x) noexcept { deterministic = x; return *this; }
 
     [[nodiscard]] bool hasHiddenDimension () const noexcept {
         return hidden_direction >=0 && hidden_direction < AMREX_SPACEDIM;
@@ -93,6 +97,7 @@ template <typename T> class MLPoissonT;
 template <typename T> class MLABecLaplacianT;
 template <typename T> class GMRESMLMGT;
 
+/// \ingroup amrex_solver_mlmg
 template <typename MF>
 class MLLinOpT
 {
@@ -153,7 +158,7 @@ public:
      * \param hibc upper boundaries
      */
     void setDomainBC (const Vector<Array<BCType,AMREX_SPACEDIM> >& lobc,
-                      const Vector<Array<BCType,AMREX_SPACEDIM> >& hibc) noexcept;
+                      const Vector<Array<BCType,AMREX_SPACEDIM> >& hibc);
 
     /**
      * \brief Set location of domain boundaries.
@@ -234,7 +239,8 @@ public:
                              const MF* /*robinbc_b*/ = nullptr,
                              const MF* /*robinbc_f*/ = nullptr) = 0;
 
-    template <typename AMF, std::enable_if_t<!std::is_same_v<MF,AMF>,int> = 0>
+    template <typename AMF, std::enable_if_t<!std::is_same_v<MF,AMF> &&
+                                             IsMultiFabLike_v<AMF>, int> = 0>
     void setLevelBC (int amrlev, const AMF* levelbcdata,
                      const AMF* robinbc_a = nullptr,
                      const AMF* robinbc_b = nullptr,
@@ -372,7 +378,7 @@ public:
      * \param resid        residual
      * \param x            solution
      * \param b            RHS
-     * \param crse_bc_data optional argument providing BC at coarse/fine boundary.
+     * \param crse_bcdata  optional argument providing BC at coarse/fine boundary.
      */
     virtual void solutionResidual (int amrlev, MF& resid, MF& x, const MF& b,
                                    const MF* crse_bcdata=nullptr) = 0;
@@ -388,7 +394,7 @@ public:
      * \param x            unknown in the residual-correction form
      * \param b            RHS in the residual-correction form
      * \param bc_mode      Is the BC homogeneous or inhomogeneous?
-     * \param crse_bc_data optional argument providing BC at coarse/fine boundary.
+     * \param crse_bcdata  optional argument providing BC at coarse/fine boundary.
      */
     virtual void correctionResidual (int amrlev, int mglev, MF& resid, MF& x, const MF& b,
                                      BCMode bc_mode, const MF* crse_bcdata=nullptr) = 0;
@@ -421,9 +427,10 @@ public:
      * \param sol    solution
      * \param loc    location of the fluxes
      */
-    virtual void compFlux (int /*amrlev*/, const Array<MF*,AMREX_SPACEDIM>& /*fluxes*/,
-                           MF& /*sol*/, Location /*loc*/) const
+    virtual void compFlux (int amrlev, const Array<MF*,AMREX_SPACEDIM>& fluxes,
+                           MF& sol, Location loc) const
     {
+        amrex::ignore_unused(amrlev, fluxes, sol, loc);
         amrex::Abort("AMReX_MLLinOp::compFlux::How did we get here?");
     }
 
@@ -435,9 +442,10 @@ public:
      * \param sol    solution
      * \param loc    location of the gradients
      */
-    virtual void compGrad (int /*amrlev*/, const Array<MF*,AMREX_SPACEDIM>& /*grad*/,
-                           MF& /*sol*/, Location /*loc*/) const
+    virtual void compGrad (int amrlev, const Array<MF*,AMREX_SPACEDIM>& grad,
+                           MF& sol, Location loc) const
     {
+        amrex::ignore_unused(amrlev, grad, sol, loc);
         amrex::Abort("AMReX_MLLinOp::compGrad::How did we get here?");
     }
 
@@ -613,6 +621,7 @@ protected:
 
     MPI_Comm m_default_comm = MPI_COMM_NULL;
     MPI_Comm m_bottom_comm = MPI_COMM_NULL;
+    /// \cond DOXYGEN_IGNORE
     struct CommContainer {
         MPI_Comm comm;
         CommContainer (MPI_Comm m) noexcept : comm(m) {}
@@ -626,6 +635,7 @@ protected:
 #endif
         }
     };
+    /// \endcond
     std::unique_ptr<CommContainer> m_raii_comm;
 
     Array<Real, AMREX_SPACEDIM> m_domain_bloc_lo {{AMREX_D_DECL(0._rt,0._rt,0._rt)}};
@@ -645,6 +655,13 @@ protected:
 
     //! Return AMR refinement ratio at given AMR level
     [[nodiscard]] int AMRRefRatio (int amr_lev) const noexcept { return m_amr_ref_ratio[amr_lev]; }
+
+    //! Return AMR refinement ratio as IntVect (1 in hidden direction)
+    [[nodiscard]] IntVect AMRRefRatioVect (int amr_lev) const noexcept {
+        IntVect rr(m_amr_ref_ratio[amr_lev]);
+        if (info.hasHiddenDimension()) { rr[info.hidden_direction] = 1; }
+        return rr;
+    }
 
     [[nodiscard]] FabFactory<FAB> const* Factory (int amr_lev, int mglev=0) const noexcept {
         return m_factory[amr_lev][mglev].get();
@@ -712,11 +729,11 @@ protected:
     [[nodiscard]] Array4<T> compactify (Array4<T> const& a) const noexcept
     {
         if (info.hidden_direction == 0) {
-            return Array4<T>(a.dataPtr(), {a.begin.y,a.begin.z,0}, {a.end.y,a.end.z,1}, a.nComp());
+            return Array4<T>(a.dataPtr(), {a.begin[1],a.begin[2],0}, {a.end[1],a.end[2],1}, a.nComp());
         } else if (info.hidden_direction == 1) {
-            return Array4<T>(a.dataPtr(), {a.begin.x,a.begin.z,0}, {a.end.x,a.end.z,1}, a.nComp());
+            return Array4<T>(a.dataPtr(), {a.begin[0],a.begin[2],0}, {a.end[0],a.end[2],1}, a.nComp());
         } else if (info.hidden_direction == 2) {
-            return Array4<T>(a.dataPtr(), {a.begin.x,a.begin.y,0}, {a.end.x,a.end.y,1}, a.nComp());
+            return Array4<T>(a.dataPtr(), {a.begin[0],a.begin[1],0}, {a.end[0],a.end[1],1}, a.nComp());
         } else {
             return a;
         }
@@ -821,7 +838,7 @@ MLLinOpT<MF>::defineGrids (const Vector<Geometry>& a_geom,
 #endif
 
     m_num_amr_levels = 0;
-    for (int amrlev = 0; amrlev < a_geom.size(); amrlev++) {
+    for (int amrlev = 0; amrlev < std::ssize(a_geom); amrlev++) {
         if (!a_grids[amrlev].empty()) {
             m_num_amr_levels++;
         }
@@ -845,8 +862,8 @@ MLLinOpT<MF>::defineGrids (const Vector<Geometry>& a_geom,
     IntVect mg_box_min_width_v(mg_box_min_width);
     IntVect mg_domain_min_width_v(mg_domain_min_width);
     if (hasHiddenDimension()) {
-        AMREX_ASSERT_WITH_MESSAGE(AMREX_SPACEDIM == 3 && m_num_amr_levels == 1,
-                                  "Hidden direction only supported for 3d level solve");
+        AMREX_ASSERT_WITH_MESSAGE(AMREX_SPACEDIM == 3,
+                                  "Hidden direction only supported for 3d");
         mg_coarsen_ratio_v[info.hidden_direction] = 1;
         mg_box_min_width_v[info.hidden_direction] = 0;
         mg_domain_min_width_v[info.hidden_direction] = 0;
@@ -859,7 +876,7 @@ MLLinOpT<MF>::defineGrids (const Vector<Geometry>& a_geom,
         m_geom[amrlev].push_back(a_geom[amrlev]);
         m_grids[amrlev].push_back(a_grids[amrlev]);
         m_dmap[amrlev].push_back(a_dmap[amrlev]);
-        if (amrlev < a_factory.size()) {
+        if (amrlev < std::ssize(a_factory)) {
             m_factory[amrlev].emplace_back(a_factory[amrlev]->clone());
         } else {
             m_factory[amrlev].push_back(std::make_unique<DefaultFabFactory<FAB>>());
@@ -889,7 +906,7 @@ MLLinOpT<MF>::defineGrids (const Vector<Geometry>& a_geom,
 
 #if (AMREX_SPACEDIM > 1)
         if (hasHiddenDimension()) {
-            m_amr_ref_ratio[amrlev-1] = rr[AMREX_SPACEDIM-info.hidden_direction];
+            m_amr_ref_ratio[amrlev-1] = rr[(info.hidden_direction+1) % AMREX_SPACEDIM];
         } else
 #endif
         {
@@ -1171,7 +1188,7 @@ MLLinOpT<MF>::defineGrids (const Vector<Geometry>& a_geom,
 
     for (int amrlev = 1; amrlev < m_num_amr_levels; ++amrlev)
     {
-        AMREX_ASSERT_WITH_MESSAGE(m_grids[amrlev][0].coarsenable(m_amr_ref_ratio[amrlev-1]),
+        AMREX_ASSERT_WITH_MESSAGE(m_grids[amrlev][0].coarsenable(AMRRefRatioVect(amrlev-1)),
                                   "MLLinOp: grids not coarsenable between AMR levels");
     }
 }
@@ -1201,7 +1218,7 @@ MLLinOpT<MF>::setDomainBC (const Array<BCType,AMREX_SPACEDIM>& a_lobc,
 template <typename MF>
 void
 MLLinOpT<MF>::setDomainBC (const Vector<Array<BCType,AMREX_SPACEDIM> >& a_lobc,
-                           const Vector<Array<BCType,AMREX_SPACEDIM> >& a_hibc) noexcept
+                           const Vector<Array<BCType,AMREX_SPACEDIM> >& a_hibc)
 {
     const int ncomp = getNComp();
     AMREX_ASSERT_WITH_MESSAGE(ncomp == a_lobc.size() && ncomp == a_hibc.size(),
@@ -1316,7 +1333,7 @@ MLLinOpT<MF>::makeAgglomeratedDMap (const Vector<BoxArray>& ba,
             const std::vector< std::vector<int> >& sfc = DistributionMapping::makeSFC(ba[i]);
 
             const int nprocs = ParallelContext::NProcsSub();
-            AMREX_ASSERT(static_cast<int>(sfc.size()) == nprocs);
+            AMREX_ASSERT(std::ssize(sfc) == nprocs);
 
             Vector<int> pmap(ba[i].size());
             for (int iproc = 0; iproc < nprocs; ++iproc) {
@@ -1541,7 +1558,7 @@ MLLinOpT<MF>::makeCoarseAmr (int famrlev, IntVect const& ng) const
 {
     if constexpr (IsMultiFabLike_v<MF>) {
         BoxArray cba = m_grids[famrlev][0];
-        IntVect ratio(AMRRefRatio(famrlev-1));
+        IntVect ratio(AMRRefRatioVect(famrlev-1));
         cba.coarsen(ratio);
         cba.convert(m_ixtype);
         return MF(cba, m_dmap[famrlev][0], getNComp(), ng);
@@ -1604,7 +1621,8 @@ MLLinOpT<MF>::isMFIterSafe (int amrlev, int mglev1, int mglev2) const
 }
 
 template <typename MF>
-template <typename AMF, std::enable_if_t<!std::is_same_v<MF,AMF>,int>>
+template <typename AMF, std::enable_if_t<!std::is_same_v<MF,AMF> &&
+                                         IsMultiFabLike_v<AMF>, int> >
 void
 MLLinOpT<MF>::setLevelBC (int amrlev, const AMF* levelbcdata,
                           const AMF* robinbc_a, const AMF* robinbc_b,
@@ -1674,6 +1692,7 @@ MLLinOpT<MF>::norm2Precond (Vector<MF const*> const& x) const -> RT
 
 extern template class MLLinOpT<MultiFab>;
 
+/// \ingroup amrex_solver_mlmg
 using MLLinOp = MLLinOpT<MultiFab>;
 
 }

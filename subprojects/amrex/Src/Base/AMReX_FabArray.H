@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -123,7 +124,8 @@ struct FBData {
     Vector<char*>       send_data;
     Vector<MPI_Request> send_reqs;
     int                 tag;
-
+    //
+    bool                deterministic = false;
 };
 
 // Data used in non-blocking parallel copy.
@@ -144,6 +146,7 @@ struct PCData {
     Vector<std::size_t> recv_size;
     Vector<MPI_Request> recv_reqs;
     Vector<MPI_Request> send_reqs;
+    bool                deterministic = false;
 
 };
 
@@ -211,7 +214,9 @@ Copy (FabArray<DFAB>& dst, FabArray<SFAB> const& src, int srccomp, int dstcomp, 
         {
             dstarr[box_no](i,j,k,dstcomp+n) = DT(srcarr[box_no](i,j,k,srccomp+n));
         });
-        Gpu::streamSynchronize();
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
     } else
 #endif
     {
@@ -284,6 +289,8 @@ Add (FabArray<FAB>& dst, FabArray<FAB> const& src, int srccomp, int dstcomp, int
 }
 
 /**
+ * \class amrex::FabArray
+ * \ingroup amrex_multifab_containers
  * \brief An Array of FortranArrayBox(FAB)-like Objects
  *
  * The FabArray<FAB> class implements a collection (stored as an array) of
@@ -490,6 +497,8 @@ public:
     * FABs are allocated for each Box in the BoxArray and the
     * sizes of the FABs and the number of components are consistent
     * with the definition of the FabArray.
+    * \warning This routine performs an MPI collective, so every rank in the
+    * current active MPI communicator must participate.
     */
     bool ok () const;
 
@@ -817,12 +826,18 @@ public:
     template <class F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
     void setDomainBndry (value_type val, int strt_comp, int ncomp, const Geometry& geom);
 
+    //! Get capacity of the FabArray
+    template <typename I, class F=FAB, std::enable_if_t<IsBaseFab<F>::value && std::is_integral_v<I> && (sizeof(I) >= sizeof(Long)), int> = 0>
+    void capacityOfFabs (LayoutData<I>& mem) const;
+
     /**
     * \brief Returns the sum of component "comp"
     *
     * \param comp   component
     * \param nghost number of ghost cells
     * \param local  If true, MPI communication is skipped.
+    * \warning Unless \p local is true, this routine performs an MPI collective
+    * and every rank in the current active MPI communicator must participate.
     */
     template <typename F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
     typename F::value_type
@@ -936,7 +951,8 @@ public:
                        const IntVect&       dnghost,
                        const Periodicity&   period = Periodicity::NonPeriodic(),
                        CpOp                 op = FabArrayBase::COPY,
-                       const FabArrayBase::CPC* a_cpc = nullptr);
+                       const FabArrayBase::CPC* a_cpc = nullptr,
+                       bool                 deterministic = false);
 
     void ParallelAdd_nowait (const FabArray<FAB>& src,
                              int                  src_comp,
@@ -978,7 +994,21 @@ public:
                               const Periodicity&   period = Periodicity::NonPeriodic(),
                               CpOp                 op = FabArrayBase::COPY,
                               const FabArrayBase::CPC* a_cpc = nullptr,
-                              bool                 to_ghost_cells_only = false);
+                              bool                 to_ghost_cells_only = false,
+                              bool                 deterministic = false);
+
+    void ParallelCopy_nowait (const FabArray<FAB>& src,
+                              int                  scomp,
+                              int                  dcomp,
+                              int                  ncomp,
+                              const IntVect&       snghost,
+                              const IntVect&       dnghost,
+                              const IntVect&       offset,
+                              const Periodicity&   period = Periodicity::NonPeriodic(),
+                              CpOp                 op = FabArrayBase::COPY,
+                              const FabArrayBase::CPC* a_cpc = nullptr,
+                              bool                 to_ghost_cells_only = false,
+                              bool                 deterministic = false);
 
     void ParallelCopy_finish ();
 
@@ -999,6 +1029,38 @@ public:
                                      const Periodicity&   period = Periodicity::NonPeriodic());
 
     void ParallelCopyToGhost_finish();
+
+    /**
+     * \brief This function copies data from src to this FabArray.
+     *
+     * \param src       source FabArray
+     * \param src_comp  starting component of source involved in this function
+     * \param dest_comp starting component of this FabArray involved in this function
+     * \param num_comp  number of components involved in this function
+     * \param snghost   number of source ghost cells involved in this function
+     * \param dnghost   number of destination ghost cells involved in this function
+     * \param offset    index shift. dest(iv,dest_comp+n) = src(iv-offset,src_comp+n)
+     * \param period    periodicity of the data
+     */
+    void ParallelCopy (const FabArray<FAB>& src, int src_comp, int dest_comp, int num_comp,
+                       const IntVect& snghost, const IntVect& dnghost,
+                       const IntVect& offset, const Periodicity& period);
+
+    /**
+     * \brief This function adds data from src to this FabArray.
+     *
+     * \param src       source FabArray
+     * \param src_comp  starting component of source involved in this function
+     * \param dest_comp starting component of this FabArray involved in this function
+     * \param num_comp  number of components involved in this function
+     * \param snghost   number of source ghost cells involved in this function
+     * \param dnghost   number of destination ghost cells involved in this function
+     * \param offset    index shift. dest(iv,dest_comp+n) = src(iv-offset,src_comp+n)
+     * \param period    periodicity of the data
+     */
+    void ParallelAdd (const FabArray<FAB>& src, int src_comp, int dest_comp, int num_comp,
+                      const IntVect& snghost, const IntVect& dnghost,
+                      const IntVect& offset, const Periodicity& period);
 
     [[deprecated("Use FabArray::ParallelCopy() instead.")]]
     void copy (const FabArray<FAB>& src,
@@ -1052,32 +1114,37 @@ public:
     bool defined (const MFIter& mfi) const noexcept;
 
     /**
-    * \brief Copy on intersection within a FabArray.  Data is copied from
-    * valid regions to intersecting regions of definition.  The
-    * purpose is to fill in the boundary regions of each FAB in
-    * the FabArray.  If cross=true, corner cells are not filled.
-    * If the length of periodic is provided, periodic boundaries are
-    * also filled.  Note that FabArray itself does not contains
-    * any periodicity information.
-    * FillBoundary expects that its cell-centered version of its BoxArray
-    * is non-overlapping.
+    * \ingroup amrex_fabarray_communication
+    * \brief Copy on intersection within a FabArray.
+    *
+    * Data is copied from valid regions to intersecting regions of
+    * definition.  The purpose is to fill in the boundary regions of each
+    * FAB in the FabArray.  If cross=true, corner cells are not filled.  If
+    * the length of periodic is provided, periodic boundaries are also
+    * filled.  Note that FabArray itself does not contains any periodicity
+    * information.  FillBoundary expects that its cell-centered version of
+    * its BoxArray is non-overlapping.
     */
     template <typename BUF=value_type>
     void FillBoundary (bool cross = false);
 
+    /// \ingroup amrex_fabarray_communication
     template <typename BUF=value_type>
     void FillBoundary (const Periodicity& period, bool cross = false);
 
     template <typename BUF=value_type>
     void FillBoundary (const IntVect& nghost, const Periodicity& period, bool cross = false);
 
+    /// \ingroup amrex_fabarray_communication
     //! Same as FillBoundary(), but only copies ncomp components starting at scomp.
     template <typename BUF=value_type>
     void FillBoundary (int scomp, int ncomp, bool cross = false);
 
+    /// \ingroup amrex_fabarray_communication
     template <typename BUF=value_type>
     void FillBoundary (int scomp, int ncomp, const Periodicity& period, bool cross = false);
 
+    /// \ingroup amrex_fabarray_communication
     template <typename BUF=value_type>
     void FillBoundary (int scomp, int ncomp, const IntVect& nghost, const Periodicity& period, bool cross = false);
 
@@ -1107,25 +1174,29 @@ public:
 
 
     /**
-     * \brief Fill ghost cells and synchronize nodal data. Ghost regions are
-     * filled with data from the intersecting valid regions. The
-     * synchronization will override valid regions by the intersecting valid
-     * regions with a higher precedence.  The smaller the global box index
-     * is, the higher precedence the box has.  With periodic boundaries, for
-     * cells in the same box, those near the lower corner have higher
-     * precedence than those near the upper corner.
+     * \ingroup amrex_fabarray_communication
+     * \brief Fill ghost cells and synchronize nodal data.
+     *
+     * Ghost regions are filled with data from the intersecting valid
+     * regions. The synchronization will override valid regions by the
+     * intersecting valid regions with a higher precedence.  The smaller the
+     * global box index is, the higher precedence the box has.  With
+     * periodic boundaries, for cells in the same box, those near the lower
+     * corner have higher precedence than those near the upper corner.
      *
      * \param period periodic length if it's non-zero
      */
     void FillBoundaryAndSync (const Periodicity& period = Periodicity::NonPeriodic());
     /**
-     * \brief Fill ghost cells and synchronize nodal data. Ghost regions are
-     * filled with data from the intersecting valid regions. The
-     * synchronization will override valid regions by the intersecting valid
-     * regions with a higher precedence.  The smaller the global box index
-     * is, the higher precedence the box has.  With periodic boundaries, for
-     * cells in the same box, those near the lower corner have higher
-     * precedence than those near the upper corner.
+     * \ingroup amrex_fabarray_communication
+     * \brief Fill ghost cells and synchronize nodal data.
+     *
+     * Ghost regions are filled with data from the intersecting valid
+     * regions. The synchronization will override valid regions by the
+     * intersecting valid regions with a higher precedence.  The smaller the
+     * global box index is, the higher precedence the box has.  With
+     * periodic boundaries, for cells in the same box, those near the lower
+     * corner have higher precedence than those near the upper corner.
      *
      * \param scomp starting component
      * \param ncomp number of components
@@ -1140,23 +1211,36 @@ public:
     void FillBoundaryAndSync_finish ();
 
     /**
-     * \brief Synchronize nodal data.  The synchronization will override
-     * valid regions by the intersecting valid regions with a higher
-     * precedence.  The smaller the global box index is, the higher
-     * precedence the box has.  With periodic boundaries, for cells in the
-     * same box, those near the lower corner have higher precedence than
-     * those near the upper corner.
+     * \ingroup amrex_fabarray_communication
+     * \brief Synchronize nodal data.
+     *
+     * The synchronization will override valid regions by the intersecting
+     * valid regions with a higher precedence.  The smaller the global box
+     * index is, the higher precedence the box has.  With periodic
+     * boundaries, for cells in the same box, those near the lower corner
+     * have higher precedence than those near the upper corner.
+     *
+     * Example: Suppose there is a valid point that is shared by 4 boxes.
+     * Some operation assigns values a, b, c, and d to the 4 points in the 4 boxes.
+     * We then call SumBoundary to add the 4 values and store the result in the 4 boxes.
+     * The value in box 0 might be the result of a+b+c+d, the value in box 1 might be
+     * the result of b+c+d+a, etc. The resulting data could be out of sync across
+     * boxes due to roundoff errors.
+     * OverrideSync synchronizes the data by overriding all values with one value
+     * (e.g., the value from box 0).
      *
      * \param period periodic length if it's non-zero
      */
     void OverrideSync (const Periodicity& period = Periodicity::NonPeriodic());
     /**
-     * \brief Synchronize nodal data.  The synchronization will override
-     * valid regions by the intersecting valid regions with a higher
-     * precedence.  The smaller the global box index is, the higher
-     * precedence the box has.  With periodic boundaries, for cells in the
-     * same box, those near the lower corner have higher precedence than
-     * those near the upper corner.
+     * \ingroup amrex_fabarray_communication
+     * \brief Synchronize nodal data.
+     *
+     * The synchronization will override valid regions by the intersecting
+     * valid regions with a higher precedence.  The smaller the global box
+     * index is, the higher precedence the box has.  With periodic
+     * boundaries, for cells in the same box, those near the lower corner
+     * have higher precedence than those near the upper corner.
      *
      * \param scomp starting component
      * \param ncomp number of components
@@ -1168,38 +1252,75 @@ public:
     void OverrideSync_finish ();
 
     /**
-    * \brief Sum values in overlapped cells.  The destination is limited to valid cells.
+    * \ingroup amrex_fabarray_communication
+    * \brief Sum values in overlapped cells.
+    *
+    * The destination is limited to valid cells. Note that being
+    * deterministic is not the same as data consistency on shared nodes. If
+    * you want data consistency on shared nodes, you can call OverrideSync
+    * after this. Sometimes, you can also wait till you need to do ghost
+    * cell exchanges, and you can then call FillBoundaryAndSync to do both.
     */
-    void SumBoundary (const Periodicity& period = Periodicity::NonPeriodic());
-    void SumBoundary (int scomp, int ncomp, const Periodicity& period = Periodicity::NonPeriodic());
-    void SumBoundary_nowait (const Periodicity& period = Periodicity::NonPeriodic());
-    void SumBoundary_nowait (int scomp, int ncomp, const Periodicity& period = Periodicity::NonPeriodic());
+    void SumBoundary (const Periodicity& period = Periodicity::NonPeriodic(),
+                      bool deterministic = false);
+    /// \ingroup amrex_fabarray_communication
+    void SumBoundary (int scomp, int ncomp, const Periodicity& period = Periodicity::NonPeriodic(),
+                      bool deterministic = false);
+    void SumBoundary_nowait (const Periodicity& period = Periodicity::NonPeriodic(),
+                             bool deterministic = false);
+    void SumBoundary_nowait (int scomp, int ncomp, const Periodicity& period = Periodicity::NonPeriodic(),
+                             bool deterministic = false);
 
     /**
-    * \brief Sum values in overlapped cells.  The destination is limited to valid + ngrow cells.
+    * \ingroup amrex_fabarray_communication
+    * \brief Sum values in overlapped cells.
+    *
+    * The destination is limited to valid + ngrow cells. Note that being
+    * deterministic is not the same as data consistency on shared nodes. If
+    * you want data consistency on shared nodes, you can call OverrideSync
+    * after this. Sometimes, you can also wait till you need to do ghost
+    * cell exchanges, and you can then call FillBoundaryAndSync to do both.
     */
     void SumBoundary (int scomp, int ncomp, IntVect const& nghost,
-                      const Periodicity& period = Periodicity::NonPeriodic());
+                      const Periodicity& period = Periodicity::NonPeriodic(),
+                      bool deterministic = false);
     void SumBoundary_nowait (int scomp, int ncomp, IntVect const& nghost,
-                             const Periodicity& period = Periodicity::NonPeriodic());
+                             const Periodicity& period = Periodicity::NonPeriodic(),
+                             bool deterministic = false);
 
     /**
+    * \ingroup amrex_fabarray_communication
     * \brief Sum values in overlapped cells.
-    *        For computing the overlap, the dst is grown by dst_ngrow, while the src uses src_ngrow.
+    *
+    * For computing the overlap, the dst is grown by dst_ngrow, while the
+    * src uses src_ngrow. Note that being deterministic is not the same as
+    * data consistency on shared nodes. If you want data consistency on
+    * shared nodes, you can call OverrideSync after this. Sometimes, you can
+    * also wait till you need to do ghost cell exchanges, and you can then
+    * call FillBoundaryAndSync to do both.
     */
     void SumBoundary (int scomp, int ncomp, IntVect const& src_nghost, IntVect const& dst_nghost,
-                      const Periodicity& period = Periodicity::NonPeriodic());
+                      const Periodicity& period = Periodicity::NonPeriodic(),
+                      bool deterministic = false);
     void SumBoundary_nowait (int scomp, int ncomp, IntVect const& src_nghost, IntVect const& dst_nghost,
-                             const Periodicity& period = Periodicity::NonPeriodic());
+                             const Periodicity& period = Periodicity::NonPeriodic(),
+                             bool deterministic = false);
     void SumBoundary_finish ();
 
-    /** \brief Fill ghost cells with values from their corresponding cells across periodic
-    * boundaries, regardless of whether the corresponding cells are valid. This differs from
-    * FillBoundary, which only fills from valid cells, and does not fill from ghost cells.
-    * The BoxArray is allowed to be overlapping.
+    /**
+     * \ingroup amrex_fabarray_communication
+     * \brief Fill ghost cells with values from their corresponding cells
+     * across periodic boundaries, regardless of whether the corresponding
+     * cells are valid.
+     *
+     * This differs from FillBoundary, which only fills from valid cells,
+     * and does not fill from ghost cells.  The BoxArray is allowed to be
+     * overlapping.
     */
     void EnforcePeriodicity (const Periodicity& period);
+    /// \ingroup amrex_fabarray_communication
     void EnforcePeriodicity (int scomp, int ncomp, const Periodicity& period);
+    /// \ingroup amrex_fabarray_communication
     void EnforcePeriodicity (int scomp, int ncomp, const IntVect& nghost,
                              const Periodicity& period);
 
@@ -1221,9 +1342,12 @@ public:
     void FBEP_nowait (int scomp, int ncomp, const IntVect& nghost,
                       const Periodicity& period, bool cross,
                       bool enforce_periodicity_only = false,
-                      bool override_sync = false);
+                      bool override_sync = false,
+                      IntVect const& sumboundary_src_nghost = IntVect(-1),
+                      bool deterministic = false);
 
     void FB_local_copy_cpu (const FB& TheFB, int scomp, int ncomp);
+    void FB_local_add_cpu (const FB& TheFB, int scomp, int ncomp);
     void PC_local_cpu (const CPC& thecpc, FabArray<FAB> const& src,
                        int scomp, int dcomp, int ncomp, CpOp op);
 
@@ -1235,9 +1359,13 @@ public:
 
 #ifdef AMREX_USE_GPU
 
+    TagVector<Array4CopyTag<value_type>> const*
+    FB_get_local_copy_tag_vector (const FB& TheFB);
+
     void FB_local_copy_gpu (const FB& TheFB, int scomp, int ncomp);
+    void FB_local_add_gpu (const FB& TheFB, int scomp, int ncomp, bool deterministic);
     void PC_local_gpu (const CPC& thecpc, FabArray<FAB> const& src,
-                       int scomp, int dcomp, int ncomp, CpOp op);
+                       int scomp, int dcomp, int ncomp, CpOp op, bool deterministic);
 
     void CMD_local_setVal_gpu (value_type x, const CommMetaData& thecmd, int scomp, int ncomp);
     void CMD_remote_setVal_gpu (value_type x, const CommMetaData& thecmd, int scomp, int ncomp);
@@ -1272,14 +1400,30 @@ public:
     static void pack_send_buffer_gpu (FabArray<FAB> const& src, int scomp, int ncomp,
                                       Vector<char*> const& send_data,
                                       Vector<std::size_t> const& send_size,
-                                      Vector<const CopyComTagsContainer*> const& send_cctc);
+                                      Vector<const CopyComTagsContainer*> const& send_cctc,
+                                      std::uint64_t id);
 
     template <typename BUF = value_type>
     static void unpack_recv_buffer_gpu (FabArray<FAB>& dst, int dcomp, int ncomp,
                                         Vector<char*> const& recv_data,
                                         Vector<std::size_t> const& recv_size,
                                         Vector<const CopyComTagsContainer*> const& recv_cctc,
-                                        CpOp op, bool is_thread_safe);
+                                        CpOp op, bool is_thread_safe,
+                                        std::uint64_t id, bool deterministic);
+
+    template <typename BUF>
+    TagVector<CommRecvBufTag<value_type>> const*
+    get_recv_copy_tag_vector (Vector<char*> const& recv_data,
+                              Vector<std::size_t> const& recv_size,
+                              Vector<CopyComTagsContainer const*> const& recv_cctc,
+                              int ncomp, std::uint64_t id);
+
+    template <typename BUF>
+    TagVector<CommSendBufTag<value_type>> const*
+    get_send_copy_tag_vector (Vector<char*> const& send_data,
+                              Vector<std::size_t> const& send_size,
+                              Vector<CopyComTagsContainer const*> const& send_cctc,
+                              int ncomp, std::uint64_t id) const;
 
 #endif
 
@@ -1299,6 +1443,7 @@ public:
 #endif
 
     /**
+     * \ingroup amrex_fabarray_communication
      * \brief Return infinity norm
      *
      * \param comp           starting component
@@ -1306,6 +1451,8 @@ public:
      * \param nghost         number of ghost cells
      * \param local          If true, MPI communication is skipped.
      * \param ignore_covered ignore covered cells. Only relevant for cell-centered EB data.
+     * \warning Unless \p local is true, this routine performs an MPI collective
+     * and every rank in the current active MPI communicator must participate.
      */
     template <typename F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
     typename F::value_type
@@ -1313,6 +1460,7 @@ public:
              [[maybe_unused]] bool ignore_covered = false) const;
 
     /**
+     * \ingroup amrex_fabarray_communication
      * \brief Return infinity norm in masked region
      *
      * \param mask   only mask=true region is included
@@ -1320,6 +1468,8 @@ public:
      * \param ncomp  number of components
      * \param nghost number of ghost cells
      * \param local  If true, MPI communication is skipped.
+     * \warning Unless \p local is true, this routine performs an MPI collective
+     * and every rank in the current active MPI communicator must participate.
      */
     template <typename IFAB, typename F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
     typename F::value_type
@@ -1414,6 +1564,20 @@ private:
     void build_arrays () const;
 
     void clear_arrays ();
+
+#ifdef AMREX_USE_GPU
+    std::map<std::uint64_t,
+             std::unique_ptr<TagVector<Array4CopyTag<value_type>>>>
+        m_fb_local_copy_handler;
+
+    using RecvSendCopyHandlerKey = std::tuple<std::uint64_t,std::size_t,int>;
+    std::map<RecvSendCopyHandlerKey,
+             std::unique_ptr<TagVector<CommRecvBufTag<value_type>>>>
+        m_recv_copy_handler;
+    mutable std::map<RecvSendCopyHandlerKey,
+                     std::unique_ptr<TagVector<CommSendBufTag<value_type>>>>
+        m_send_copy_handler;
+#endif
 
 public:
 
@@ -1524,17 +1688,75 @@ public:
                          value_type a, const FabArray<FAB>& x, int xcomp,
                          value_type b, const FabArray<FAB>& y, int ycomp,
                          int dstcomp, int numcomp, const IntVect& nghost);
+
+    /**
+     * \brief y = x2+a2*(y+a1*x1)
+     *
+     * \param y      FabArray y
+     * \param a1     scalar a1
+     * \param x1     FabArray x1
+     * \param a2     scalar a2
+     * \param x2     FabArray x2
+     * \param xcomp  starting component of x
+     * \param ycomp  starting component of y
+     * \param ncomp  number of components
+     * \param nghost number of ghost cells
+     */
+    template <class F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
+    static void Saxpy_Xpay (FabArray<FAB>& y, value_type a1, FabArray<FAB> const& x1,
+                            value_type a2, FabArray<FAB> const& x2,
+                            int xcomp, int ycomp, int ncomp, IntVect const& nghost);
+
+    /**
+     * \brief y1 += a1*x1; y2 += a2*x2;
+     *
+     * \param y1     FabArray y1
+     * \param a1     scalar a1
+     * \param x1     FabArray x1
+     * \param y2     FabArray y2
+     * \param a2     scalar a2
+     * \param x2     FabArray x2
+     * \param xcomp  starting component of x1, x2
+     * \param ycomp  starting component of y1, y2
+     * \param ncomp  number of components
+     * \param nghost number of ghost cells
+     */
+    template <class F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
+    static void Saxpy_Saxpy (FabArray<FAB>& y1, value_type a1, FabArray<FAB> const& x1,
+                             FabArray<FAB>& y2, value_type a2, FabArray<FAB> const& x2,
+                             int xcomp, int ycomp, int ncomp, IntVect const& nghost);
+
+    /**
+     * \brief y1 += a1*y2; y2 += a2*x;
+     *
+     * \param y1     FabArray y1
+     * \param a1     scalar a1
+     * \param y2     FabArray y2
+     * \param a2     scalar a2
+     * \param x      FabArray x
+     * \param xcomp  starting component of x
+     * \param ycomp  starting component of y1, y2
+     * \param ncomp  number of components
+     * \param nghost number of ghost cells
+     */
+    template <class F=FAB, std::enable_if_t<IsBaseFab<F>::value,int> = 0>
+    static void Saypy_Saxpy (FabArray<FAB>& y1, value_type a1,
+                             FabArray<FAB>& y2, value_type a2, FabArray<FAB> const& x,
+                             int xcomp, int ycomp, int ncomp, IntVect const& nghost);
 };
 
+}
 
 #include <AMReX_FabArrayCommI.H>
+
+namespace amrex {
 
 template <class FAB>
 bool
 FabArray<FAB>::defined (int K) const noexcept
 {
     int li = localindex(K);
-    if (li >= 0 && li < static_cast<int>(m_fabs_v.size()) && m_fabs_v[li] != 0) {
+    if (li >= 0 && li < std::ssize(m_fabs_v) && m_fabs_v[li] != 0) {
         return true;
     }
     else {
@@ -1547,7 +1769,7 @@ bool
 FabArray<FAB>::defined (const MFIter& mfi) const noexcept
 {
     int li = mfi.LocalIndex();
-    if (li < static_cast<int>(m_fabs_v.size()) && m_fabs_v[li] != nullptr) {
+    if (li < std::ssize(m_fabs_v) && m_fabs_v[li] != nullptr) {
         return true;
     }
     else {
@@ -1607,7 +1829,7 @@ FabArray<FAB>::build_arrays () const
         m_hp_arrays = (void*)The_Pinned_Arena()->alloc(n*2*sizeof(A));
         m_dp_arrays = (void*)The_Arena()->alloc(n*2*sizeof(A));
 #else
-        m_hp_arrays = (void*)std::malloc(n*2*sizeof(A));
+        m_hp_arrays = std::malloc(n*2*sizeof(A));
 #endif
         for (int li = 0; li < n; ++li) {
             if (m_fabs_v[li]) {
@@ -1623,7 +1845,10 @@ FabArray<FAB>::build_arrays () const
 #ifdef AMREX_USE_GPU
         m_arrays.dp = (A*)m_dp_arrays;
         m_const_arrays.dp = (AC*)m_dp_arrays + n;
-        Gpu::htod_memcpy(m_dp_arrays, m_hp_arrays, n*2*sizeof(A));
+        Gpu::htod_memcpy_async(m_dp_arrays, m_hp_arrays, n*2*sizeof(A));
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
 #endif
     }
 }
@@ -1650,7 +1875,7 @@ FAB*
 FabArray<FAB>::release (int K)
 {
     const int li = localindex(K);
-    if (li >= 0 && li < static_cast<int>(m_fabs_v.size()) && m_fabs_v[li] != nullptr) {
+    if (li >= 0 && li < std::ssize(m_fabs_v) && m_fabs_v[li] != nullptr) {
         AMREX_ASSERT(m_single_chunk_arena == nullptr);
         Long nbytes = amrex::nBytesOwned(*m_fabs_v[li]);
         if (nbytes > 0) {
@@ -1670,7 +1895,7 @@ FAB*
 FabArray<FAB>::release (const MFIter& mfi)
 {
     const int li = mfi.LocalIndex();
-    if (li >= 0 && li < static_cast<int>(m_fabs_v.size()) && m_fabs_v[li] != nullptr) {
+    if (li >= 0 && li < std::ssize(m_fabs_v) && m_fabs_v[li] != nullptr) {
         AMREX_ASSERT(m_single_chunk_arena == nullptr);
         Long nbytes = amrex::nBytesOwned(*m_fabs_v[li]);
         if (nbytes > 0) {
@@ -1719,6 +1944,12 @@ FabArray<FAB>::clear ()
     m_single_chunk_size = 0;
 
     m_tags.clear();
+
+#ifdef AMREX_USE_GPU
+    m_fb_local_copy_handler.clear();
+    m_recv_copy_handler.clear();
+    m_send_copy_handler.clear();
+#endif
 
     FabArrayBase::clear();
 }
@@ -1842,7 +2073,7 @@ template <class FAB>
 FabArray<FAB>::FabArray (FabArray<FAB>&& rhs) noexcept
     : FabArrayBase (static_cast<FabArrayBase&&>(rhs))
     , m_factory    (std::move(rhs.m_factory))
-    , m_dallocator (std::move(rhs.m_dallocator))
+    , m_dallocator (rhs.m_dallocator)
     , m_single_chunk_arena(std::move(rhs.m_single_chunk_arena))
     , m_single_chunk_size(std::exchange(rhs.m_single_chunk_size,0))
     , define_function_called(rhs.define_function_called)
@@ -1855,11 +2086,16 @@ FabArray<FAB>::FabArray (FabArray<FAB>&& rhs) noexcept
     , m_const_arrays(rhs.m_const_arrays)
     , m_tags       (std::move(rhs.m_tags))
     , shmem        (std::move(rhs.shmem))
+#ifdef AMREX_USE_GPU
+    , m_fb_local_copy_handler(std::move(rhs.m_fb_local_copy_handler))
+    , m_recv_copy_handler(std::move(rhs.m_recv_copy_handler))
+    , m_send_copy_handler(std::move(rhs.m_send_copy_handler))
+#endif
     // no need to worry about the data used in non-blocking FillBoundary.
 {
     m_FA_stats.recordBuild();
     rhs.define_function_called = false; // the responsibility of clear BD has been transferred.
-    rhs.m_fabs_v.clear(); // clear the data pointers so that rhs.clear does delete them.
+    rhs.m_fabs_v.clear(); // clear the data pointers so that rhs.clear does not delete them.
     rhs.clear();
 }
 
@@ -1873,7 +2109,7 @@ FabArray<FAB>::operator= (FabArray<FAB>&& rhs) noexcept
 
         FabArrayBase::operator=(static_cast<FabArrayBase&&>(rhs));
         m_factory = std::move(rhs.m_factory);
-        m_dallocator = std::move(rhs.m_dallocator);
+        m_dallocator = rhs.m_dallocator;
         m_single_chunk_arena = std::move(rhs.m_single_chunk_arena);
         std::swap(m_single_chunk_size, rhs.m_single_chunk_size);
         define_function_called = rhs.define_function_called;
@@ -1886,6 +2122,11 @@ FabArray<FAB>::operator= (FabArray<FAB>&& rhs) noexcept
         m_const_arrays = rhs.m_const_arrays;
         std::swap(m_tags, rhs.m_tags);
         shmem = std::move(rhs.shmem);
+#ifdef AMREX_USE_GPU
+        std::swap(m_fb_local_copy_handler, rhs.m_fb_local_copy_handler);
+        std::swap(m_recv_copy_handler, rhs.m_recv_copy_handler);
+        std::swap(m_send_copy_handler, rhs.m_send_copy_handler);
+#endif
 
         rhs.define_function_called = false;
         rhs.m_fabs_v.clear();
@@ -2258,7 +2499,9 @@ FabArray<FAB>::setBndry (value_type val,
                         }
                     }
                 });
-                Gpu::streamSynchronize();
+                if (!Gpu::inNoSyncRegion()) {
+                    Gpu::streamSynchronize();
+                }
             } else {
                 using Tag = Array4BoxTag<value_type>;
                 Vector<Tag> tags;
@@ -2272,9 +2515,9 @@ FabArray<FAB>::setBndry (value_type val,
                         b = vbx;
                         b.setRange(2, vbx.smallEnd(2)-nghost[2], nghost[2]);
                         b.grow(IntVect(nghost[0],nghost[1],0));
-                        tags.emplace_back(Tag{a, b});
+                        tags.emplace_back(Tag{.dfab = a, .dbox = b});
                         b.shift(2, vbx.length(2)+nghost[2]);
-                        tags.emplace_back(Tag{a, b});
+                        tags.emplace_back(Tag{.dfab = a, .dbox = b});
                     }
 #endif
 #if (AMREX_SPACEDIM >= 2)
@@ -2282,17 +2525,17 @@ FabArray<FAB>::setBndry (value_type val,
                         b = vbx;
                         b.setRange(1, vbx.smallEnd(1)-nghost[1], nghost[1]);
                         b.grow(0, nghost[0]);
-                        tags.emplace_back(Tag{a, b});
+                        tags.emplace_back(Tag{.dfab = a, .dbox = b});
                         b.shift(1, vbx.length(1)+nghost[1]);
-                        tags.emplace_back(Tag{a, b});
+                        tags.emplace_back(Tag{.dfab = a, .dbox = b});
                     }
 #endif
                     if (nghost[0] > 0) {
                         b = vbx;
                         b.setRange(0, vbx.smallEnd(0)-nghost[0], nghost[0]);
-                        tags.emplace_back(Tag{a, b});
+                        tags.emplace_back(Tag{.dfab = a, .dbox = b});
                         b.shift(0, vbx.length(0)+nghost[0]);
-                        tags.emplace_back(Tag{a, b});
+                        tags.emplace_back(Tag{.dfab = a, .dbox = b});
                     }
                 }
 
@@ -2352,6 +2595,17 @@ FabArray<FAB>::setDomainBndry (value_type val,
         {
             get(fai).template setComplement<RunOn::Device>(val, domain_box, strt_comp, ncomp);
         }
+    }
+}
+
+
+template <class FAB>
+template <typename I, class F, std::enable_if_t<IsBaseFab<F>::value && std::is_integral_v<I> && (sizeof(I) >= sizeof(Long)), int> FOO>
+void
+FabArray<FAB>::capacityOfFabs (LayoutData<I>& mem) const {
+    AMREX_ASSERT(amrex::isMFIterSafe(*this, mem));
+    for (MFIter mfi(*this, MFItInfo{}.DisableDeviceSync()); mfi.isValid(); ++mfi) {
+        mem[mfi] += static_cast<I>((*this)[mfi].nBytesOwned());
     }
 }
 
@@ -2920,6 +3174,175 @@ FabArray<FAB>::Xpay (FabArray<FAB>& y, value_type a, FabArray<FAB> const& x,
 
 template <class FAB>
 template <class F, std::enable_if_t<IsBaseFab<F>::value,int> FOO>
+void FabArray<FAB>::Saxpy_Xpay (FabArray<FAB>& y, value_type a1, FabArray<FAB> const& x1,
+                                value_type a2, FabArray<FAB> const& x2,
+                                int xcomp, int ycomp, int ncomp, IntVect const& nghost)
+{
+    AMREX_ASSERT(y.boxArray() == x1.boxArray() &&
+                 y.boxArray() == x2.boxArray() &&
+                 y.distributionMap == x1.distributionMap &&
+                 y.distributionMap == x2.distributionMap &&
+                 y.nGrowVect().allGE(nghost) &&
+                 x1.nGrowVect().allGE(nghost) &&
+                 x2.nGrowVect().allGE(nghost));
+
+    BL_PROFILE("FabArray::Saxpy_Xpay()");
+
+#ifdef AMREX_USE_GPU
+    if (Gpu::inLaunchRegion() && y.isFusingCandidate()) {
+        auto const& yma = y.arrays();
+        auto const& xma1 = x1.const_arrays();
+        auto const& xma2 = x2.const_arrays();
+        ParallelFor(y, nghost, ncomp,
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+        {
+            yma[box_no](i,j,k,ycomp+n) = xma2[box_no](i,j,k,xcomp+n)
+                                 + a2 * (yma [box_no](i,j,k,ycomp+n)
+                                  + a1 * xma1[box_no](i,j,k,xcomp+n));
+        });
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
+    } else
+#endif
+    {
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+        for (MFIter mfi(y,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+        {
+            const Box& bx = mfi.growntilebox(nghost);
+
+            if (bx.ok()) {
+                auto const& xfab1 = x1.const_array(mfi);
+                auto const& xfab2 = x2.const_array(mfi);
+                auto const& yfab = y.array(mfi);
+                AMREX_HOST_DEVICE_PARALLEL_FOR_4D( bx, ncomp, i, j, k, n,
+                {
+                    yfab(i,j,k,ycomp+n) = xfab2(i,j,k,xcomp+n)
+                                  + a2 * (yfab (i,j,k,ycomp+n)
+                                   + a1 * xfab1(i,j,k,xcomp+n));
+                });
+            }
+        }
+    }
+}
+
+template <class FAB>
+template <class F, std::enable_if_t<IsBaseFab<F>::value,int> FOO>
+void FabArray<FAB>::Saxpy_Saxpy (FabArray<FAB>& y1, value_type a1, FabArray<FAB> const& x1,
+                                 FabArray<FAB>& y2, value_type a2, FabArray<FAB> const& x2,
+                                 int xcomp, int ycomp, int ncomp, IntVect const& nghost)
+{
+    AMREX_ASSERT(y1.boxArray() == y2.boxArray() &&
+                 y1.boxArray() == x1.boxArray() &&
+                 y1.boxArray() == x2.boxArray() &&
+                 y1.distributionMap == y2.distributionMap &&
+                 y1.distributionMap == x1.distributionMap &&
+                 y1.distributionMap == x2.distributionMap &&
+                 y1.nGrowVect().allGE(nghost) &&
+                 y2.nGrowVect().allGE(nghost) &&
+                 x1.nGrowVect().allGE(nghost) &&
+                 x2.nGrowVect().allGE(nghost));
+
+    BL_PROFILE("FabArray::Saxpy_Saxpy()");
+
+#ifdef AMREX_USE_GPU
+    if (Gpu::inLaunchRegion() && y1.isFusingCandidate()) {
+        auto const& y1ma = y1.arrays();
+        auto const& x1ma = x1.const_arrays();
+        auto const& y2ma = y2.arrays();
+        auto const& x2ma = x2.const_arrays();
+        ParallelFor(y1, nghost, ncomp,
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+        {
+            y1ma[box_no](i,j,k,ycomp+n) += a1 * x1ma[box_no](i,j,k,xcomp+n);
+            y2ma[box_no](i,j,k,ycomp+n) += a2 * x2ma[box_no](i,j,k,xcomp+n);
+        });
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
+    } else
+#endif
+    {
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+        for (MFIter mfi(y1,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+        {
+            const Box& bx = mfi.growntilebox(nghost);
+
+            if (bx.ok()) {
+                auto const& x1fab = x1.const_array(mfi);
+                auto const& y1fab = y1.array(mfi);
+                auto const& x2fab = x2.const_array(mfi);
+                auto const& y2fab = y2.array(mfi);
+                AMREX_HOST_DEVICE_PARALLEL_FOR_4D( bx, ncomp, i, j, k, n,
+                {
+                    y1fab(i,j,k,ycomp+n) += a1 * x1fab(i,j,k,xcomp+n);
+                    y2fab(i,j,k,ycomp+n) += a2 * x2fab(i,j,k,xcomp+n);
+                });
+            }
+        }
+    }
+}
+
+template <class FAB>
+template <class F, std::enable_if_t<IsBaseFab<F>::value,int> FOO>
+void FabArray<FAB>::Saypy_Saxpy (FabArray<FAB>& y1, value_type a1,
+                                 FabArray<FAB>& y2, value_type a2, FabArray<FAB> const& x,
+                                 int xcomp, int ycomp, int ncomp, IntVect const& nghost)
+{
+    AMREX_ASSERT(y1.boxArray() == y2.boxArray() &&
+                 y1.boxArray() ==  x.boxArray() &&
+                 y1.distributionMap == y2.distributionMap &&
+                 y1.distributionMap ==  x.distributionMap &&
+                 y1.nGrowVect().allGE(nghost) &&
+                 y2.nGrowVect().allGE(nghost) &&
+                  x.nGrowVect().allGE(nghost));
+
+    BL_PROFILE("FabArray::Saypy_Saxpy()");
+
+#ifdef AMREX_USE_GPU
+    if (Gpu::inLaunchRegion() && y1.isFusingCandidate()) {
+        auto const& y1ma = y1.arrays();
+        auto const& y2ma = y2.arrays();
+        auto const&  xma = x.const_arrays();
+        ParallelFor(y1, nghost, ncomp,
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+        {
+            y1ma[box_no](i,j,k,ycomp+n) += a1 * y2ma[box_no](i,j,k,ycomp+n);
+            y2ma[box_no](i,j,k,ycomp+n) += a2 *  xma[box_no](i,j,k,xcomp+n);
+        });
+        if (!Gpu::inNoSyncRegion()) {
+            Gpu::streamSynchronize();
+        }
+    } else
+#endif
+    {
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+        for (MFIter mfi(y1,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+        {
+            const Box& bx = mfi.growntilebox(nghost);
+
+            if (bx.ok()) {
+                auto const&  xfab = x.const_array(mfi);
+                auto const& y1fab = y1.array(mfi);
+                auto const& y2fab = y2.array(mfi);
+                AMREX_HOST_DEVICE_PARALLEL_FOR_4D( bx, ncomp, i, j, k, n,
+                {
+                    y1fab(i,j,k,ycomp+n) += a1 * y2fab(i,j,k,ycomp+n);
+                    y2fab(i,j,k,ycomp+n) += a2 *  xfab(i,j,k,xcomp+n);
+                });
+            }
+        }
+    }
+}
+
+template <class FAB>
+template <class F, std::enable_if_t<IsBaseFab<F>::value,int> FOO>
 void
 FabArray<FAB>::LinComb (FabArray<FAB>& dst,
                         value_type a, const FabArray<FAB>& x, int xcomp,
@@ -3171,73 +3594,67 @@ FabArray<FAB>::OverrideSync_finish ()
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary (const Periodicity& period)
+FabArray<FAB>::SumBoundary (const Periodicity& period, bool deterministic)
 {
-    SumBoundary(0, n_comp, IntVect(0), period);
+    SumBoundary(0, n_comp, IntVect(0), period, deterministic);
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary (int scomp, int ncomp, const Periodicity& period)
+FabArray<FAB>::SumBoundary (int scomp, int ncomp, const Periodicity& period, bool deterministic)
 {
-    SumBoundary(scomp, ncomp, IntVect(0), period);
+    SumBoundary(scomp, ncomp, IntVect(0), period, deterministic);
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary (int scomp, int ncomp, IntVect const& nghost, const Periodicity& period)
+FabArray<FAB>::SumBoundary (int scomp, int ncomp, IntVect const& nghost, const Periodicity& period, bool deterministic)
 {
-    SumBoundary(scomp, ncomp, this->nGrowVect(), nghost, period);
+    SumBoundary(scomp, ncomp, this->nGrowVect(), nghost, period, deterministic);
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary (int scomp, int ncomp, IntVect const& src_nghost, IntVect const& dst_nghost, const Periodicity& period)
+FabArray<FAB>::SumBoundary (int scomp, int ncomp, IntVect const& src_nghost, IntVect const& dst_nghost, const Periodicity& period, bool deterministic)
 {
     BL_PROFILE("FabArray<FAB>::SumBoundary()");
 
-    SumBoundary_nowait(scomp, ncomp, src_nghost, dst_nghost, period);
+    SumBoundary_nowait(scomp, ncomp, src_nghost, dst_nghost, period, deterministic);
     SumBoundary_finish();
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary_nowait (const Periodicity& period)
+FabArray<FAB>::SumBoundary_nowait (const Periodicity& period, bool deterministic)
 {
-    SumBoundary_nowait(0, n_comp, IntVect(0), period);
+    SumBoundary_nowait(0, n_comp, IntVect(0), period, deterministic);
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary_nowait (int scomp, int ncomp, const Periodicity& period)
+FabArray<FAB>::SumBoundary_nowait (int scomp, int ncomp, const Periodicity& period, bool deterministic)
 {
-    SumBoundary_nowait(scomp, ncomp, IntVect(0), period);
+    SumBoundary_nowait(scomp, ncomp, IntVect(0), period, deterministic);
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary_nowait (int scomp, int ncomp, IntVect const& nghost, const Periodicity& period)
+FabArray<FAB>::SumBoundary_nowait (int scomp, int ncomp, IntVect const& nghost, const Periodicity& period, bool deterministic)
 {
-    SumBoundary_nowait(scomp, ncomp, this->nGrowVect(), nghost, period);
+    SumBoundary_nowait(scomp, ncomp, this->nGrowVect(), nghost, period, deterministic);
 }
 
 template <class FAB>
 void
-FabArray<FAB>::SumBoundary_nowait (int scomp, int ncomp, IntVect const& src_nghost, IntVect const& dst_nghost, const Periodicity& period)
+FabArray<FAB>::SumBoundary_nowait (int scomp, int ncomp, IntVect const& src_nghost, IntVect const& dst_nghost, const Periodicity& period, bool deterministic)
 {
     BL_PROFILE("FabArray<FAB>::SumBoundary_nowait()");
 
     if ( n_grow == IntVect::TheZeroVector() && boxArray().ixType().cellCentered()) { return; }
 
-    AMREX_ALWAYS_ASSERT(src_nghost.allLE(n_grow));
+    AMREX_ALWAYS_ASSERT(src_nghost.allLE(n_grow) && dst_nghost.allLE(n_grow));
 
-    auto* tmp = new FabArray<FAB>( boxArray(), DistributionMap(), ncomp, src_nghost, MFInfo(), Factory() );
-    amrex::Copy(*tmp, *this, scomp, 0, ncomp, src_nghost);
-    this->setVal(typename FAB::value_type(0), scomp, ncomp, dst_nghost);
-    this->ParallelCopy_nowait(*tmp,0,scomp,ncomp,src_nghost,dst_nghost,period,FabArrayBase::ADD);
-
-    // All local. Operation complete.
-    if (!this->pcd) { delete tmp; }
+    FBEP_nowait(scomp, ncomp, dst_nghost, period, false, false, false, src_nghost, deterministic);
 }
 
 template <class FAB>
@@ -3245,13 +3662,7 @@ void
 FabArray<FAB>::SumBoundary_finish ()
 {
     BL_PROFILE("FabArray<FAB>::SumBoundary_finish()");
-
-    // If pcd doesn't exist, ParallelCopy was all local and operation was fully completed in "SumBoundary_nowait".
-    if ( (n_grow == IntVect::TheZeroVector() && boxArray().ixType().cellCentered()) || !(this->pcd) ) { return; }
-
-    auto* tmp = const_cast<FabArray<FAB>*> (this->pcd->src);
-    this->ParallelCopy_finish();
-    delete tmp;
+    FillBoundary_finish();
 }
 
 template <class FAB>
