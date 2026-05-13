@@ -21,10 +21,7 @@
 #endif
 
 #if defined(AXIONYX) && defined(AMREX_USE_MPI)
-#define ALIGN 16
-#include <Distribution.H>
-#include <AlignedAllocator.h>
-#include <Dfft.H>
+#include <AMRex_FFT.H>
 #endif
 
 #ifdef INFGRAV

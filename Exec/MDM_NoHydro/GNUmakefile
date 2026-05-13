@@ -37,12 +37,10 @@ USE_CGS = FALSE
 Bpack := ./Make.package
 Blocs := .
 
-LIBRARIES += -L$(FFTW_DIR)/lib -lfftw3_mpi -lfftw3
-INCLUDE_LOCATIONS       += $(FFTW_DIR)/include
-
-include $(AMREX_HOME)/Src/Extern/SWFFT/Make.package
-INCLUDE_LOCATIONS       += $(AMREX_HOME)/Src/Extern/SWFFT
-VPATH_LOCATIONS         += $(AMREX_HOME)/Src/Extern/SWFFT
+USE_FFT := TRUE
+# AMReX native FFT uses FFTW3 locally on each rank (no fftw3_mpi needed)
+INCLUDE_LOCATIONS += $(FFTW_DIR)/include
+LIBRARIES         += -L$(FFTW_DIR)/lib
 
 include $(TOP)/Exec/Make.Nyx  
 
