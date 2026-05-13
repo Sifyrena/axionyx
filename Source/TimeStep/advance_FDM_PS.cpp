@@ -18,6 +18,19 @@ using namespace amrex;
 using cMF      = FabArray<BaseFab<GpuComplex<Real>>>;
 using AmrexFFT = FFT::R2C<Real, FFT::Direction::both, true>;
 
+// Cached FFT object — FFTW plan creation is expensive; construct once per domain.
+static std::unique_ptr<AmrexFFT> s_fft;
+static Box                       s_fft_domain;
+
+static AmrexFFT& get_fft(Box const& domain)
+{
+    if (!s_fft || s_fft_domain != domain) {
+        s_fft        = std::make_unique<AmrexFFT>(domain);
+        s_fft_domain = domain;
+    }
+    return *s_fft;
+}
+
 void drift(AmrexFFT& fft, cMF& psi, MultiFab& Ax_new,
            Box const& domain, Real dt, Real h, Real a_half, Real hbaroverm);
 
@@ -165,7 +178,7 @@ void Nyx::advance_FDM_PS(amrex::Real time,
   // *****************************************
   // Construct FFT and load wavefunction into complex MultiFab
   // *****************************************
-  AmrexFFT fft(geom.Domain());
+  AmrexFFT& fft = get_fft(geom.Domain());
   cMF psi(Ax_old.boxArray(), Ax_old.DistributionMap(), 1, 0);
 
   for (MFIter mfi(psi); mfi.isValid(); ++mfi)
@@ -374,7 +387,7 @@ void Nyx::advance_FDM_PS_NG(amrex::Real time,
   // *****************************************
   // Construct FFT and load wavefunction into complex MultiFab
   // *****************************************
-  AmrexFFT fft(geom.Domain());
+  AmrexFFT& fft = get_fft(geom.Domain());
   cMF psi(Ax_old.boxArray(), Ax_old.DistributionMap(), 1, 0);
 
   for (MFIter mfi(psi); mfi.isValid(); ++mfi)
