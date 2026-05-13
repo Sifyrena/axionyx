@@ -21,7 +21,7 @@
 #endif
 
 #if defined(AXIONYX) && defined(AMREX_USE_MPI)
-#include <AMRex_FFT.H>
+#include <AMReX_FFT.H>
 #endif
 
 #ifdef INFGRAV
