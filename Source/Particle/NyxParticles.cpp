@@ -1151,7 +1151,7 @@ Nyx::particle_redistribute (int lbase, bool my_init)
         if (my_init)
         {
 
-          DMPC->Redistribute(lbase, DMPC->finestLevel());
+          DMPC->Redistribute(lbase, DMPC->finestLevel(), 1);  // nGrow=1 matches post_timestep behaviour
 
             return;
         }

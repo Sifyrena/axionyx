@@ -28,6 +28,16 @@ Nyx::advance_FDM_FD (Real time,
     MultiFab&  Ax_old = get_old_data(Axion_Type);
     MultiFab&  Ax_new = get_new_data(Axion_Type);
 
+#ifdef GRAVITY
+    {
+        const Real phi_min     = get_old_data(PhiGrav_Type).min(0, 0);
+        const Real phi_max_diag = get_old_data(PhiGrav_Type).max(0, 0);
+        amrex::Print() << "  advance_FDM_FD level-" << level
+                       << " phi_old_min=" << phi_min
+                       << " phi_old_max=" << phi_max_diag << "\n";
+    }
+#endif
+
 #ifdef DEBUG
     if (Ax_old.contains_nan(0, Ax_old.nComp(), 0))
       {
@@ -379,18 +389,23 @@ Nyx::advance_FDM_FD (Real time,
 
     Ax_new.FillBoundary(geom.periodicity());
 
-#ifdef DEBUG
-    if (Ax_new.contains_nan(0, Ax_new.nComp(), 0))
-      {
-        for (int i = 0; i < Ax_new.nComp(); i++)
-          {
-            if (Ax_new.contains_nan(i,1,0))
-              {
-		std::cout << "Testing component i for NaNs: " << i << std::endl;
-		amrex::Abort("Ax_new has NaNs in this component::advance_FDM_FD()");
-              }
-          }
-      }
-#endif
+    // Always-on post-advance health check (not gated on DEBUG)
+    {
+        const Real dens_max = Ax_new.max(Nyx::AxDens, 0);
+        const Real re_max   = Ax_new.norm0(Nyx::AxRe);
+        amrex::Print() << "  advance_FDM_FD level-" << level
+                       << " AxDens_max=" << dens_max
+                       << " |AxRe|_max=" << re_max << "\n";
+        if (Ax_new.contains_nan(0, Ax_new.nComp(), 0))
+        {
+            for (int i = 0; i < Ax_new.nComp(); i++)
+                if (Ax_new.contains_nan(i, 1, 0))
+                    amrex::Abort("advance_FDM_FD: Ax_new has NaN in component "
+                                 + std::to_string(i));
+        }
+        // Sanity threshold: flag runaway amplification early
+        if (dens_max > 1.0e30)
+            amrex::Abort("advance_FDM_FD: AxDens_max > 1e30, FD stencil blowup");
+    }
 }
 #endif

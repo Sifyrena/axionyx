@@ -1061,21 +1061,41 @@ Nyx::init (AmrLevel& old)
     MultiFab&  Ax_new = get_new_data(Axion_Type);
     FillPatch(old, Ax_new, 0, cur_time, Axion_Type, 0, NUM_AX);
 #ifdef FDM
-    // Recompute AxDens and AxPhas from interpolated AxRe/AxIm for consistency
-    for (MFIter mfi(Ax_new, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-        const Box& bx = mfi.tilebox();
-        auto const& ax = Ax_new.array(mfi);
-        const int re = AxRe, im = AxIm, dens = AxDens, phas = AxPhas;
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            Real r = ax(i,j,k,re);
-            Real c = ax(i,j,k,im);
-            ax(i,j,k,dens) = r*r + c*c;
-            ax(i,j,k,phas) = std::atan2(c, r);
-        });
+    // Recompute AxDens/AxPhas from AxRe/AxIm and apply mass-conservative
+    // renormalization.  FillPatch conserves the L1 norm of AxDens; recomputing
+    // AxDens = AxRe²+AxIm² from separately interpolated components does not.
+    // The mass mismatch shifts mass_offset in the Poisson solve → spurious φ_grav.
+    {
+        const Real cell_vol = geom.CellSize(0) * geom.CellSize(1) * geom.CellSize(2);
+        const Real mass_fill = Ax_new.sum(AxDens) * cell_vol;
+
+        for (MFIter mfi(Ax_new, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+            const Box& bx = mfi.tilebox();
+            auto const& ax = Ax_new.array(mfi);
+            const int re = AxRe, im = AxIm, dens = AxDens, phas = AxPhas;
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                Real r = ax(i,j,k,re);
+                Real c = ax(i,j,k,im);
+                ax(i,j,k,dens) = r*r + c*c;
+                ax(i,j,k,phas) = std::atan2(c, r);
+            });
+        }
+
+        const Real mass_recomputed = Ax_new.sum(AxDens) * cell_vol;
+        if (mass_recomputed > 0.0 && mass_fill > 0.0) {
+            const Real renorm = std::sqrt(mass_fill / mass_recomputed);
+            Ax_new.mult(renorm,          AxRe,   1, 0);
+            Ax_new.mult(renorm,          AxIm,   1, 0);
+            Ax_new.mult(renorm * renorm, AxDens, 1, 0);
+            amrex::Print() << "  init(old) level-" << level
+                           << " FDM mass renorm: factor=" << renorm
+                           << "  mass_fill=" << mass_fill
+                           << "  mass_recomputed=" << mass_recomputed << "\n";
+        }
     }
 #endif
-    // Fill old slot so swapTimeLevels in advance_axionyx doesn't expose
-    // uninitialized data as get_new_data() on the first substep after regrid.
+    // Fill old slot AFTER renormalization so swapTimeLevels in advance_axionyx
+    // exposes the correct renormalized state as get_new_data() on first substep.
     state[Axion_Type].allocOldData();
     MultiFab::Copy(get_old_data(Axion_Type), Ax_new, 0, 0, Ax_new.nComp(), 0);
 #endif
@@ -1168,15 +1188,9 @@ Nyx::init ()
     MultiFab&  Ax_new = get_new_data(Axion_Type);
     FillCoarsePatch(Ax_new, 0, cur_time, Axion_Type, 0, Ax_new.nComp());
 
-    // setTimeLevel() (called earlier in init()) allocates both old and new slots
-    // but leaves old uninitialized.  advance_axionyx then calls swapTimeLevels()
-    // over all levels — exposing that uninitialized old slot as get_new_data()
-    // on the first level-1 substep → NaN.  Fill old from new right here.
     state[Axion_Type].allocOldData();   // no-op if already allocated; ensures old exists
-    MultiFab::Copy(get_old_data(Axion_Type), Ax_new, 0, 0, Ax_new.nComp(), 0);
 
-    // --- NaN diagnostic: find exactly which component is corrupt ----------
-    // contains_nan() is collective — all ranks must call it; only IO rank prints
+    // --- NaN diagnostic after FillCoarsePatch ---
     {
         const char* names[] = {"AxDens","AxRe","AxIm","AxPhas"};
         for (int c = 0; c < Ax_new.nComp(); ++c) {
@@ -1186,28 +1200,53 @@ Nyx::init ()
                                << " (" << names[c] << ") after FillCoarsePatch\n";
         }
     }
-    // ----------------------------------------------------------------------
 
-    // Bilinear interpolation of AxPhas across a 2π wrap, or AxDens across a
-    // steep gradient, can produce NaN/unphysical values on the new level.
-    // AxRe and AxIm interpolate cleanly as smooth fields, so recompute
-    // AxDens and AxPhas from them to restore consistency.
+    // Recompute AxDens and AxPhas from AxRe/AxIm (interpolated cleanly as smooth
+    // fields) to avoid artefacts from direct interpolation of AxDens or AxPhas.
+    //
+    // Mass-conservative renormalization: bilinear FillCoarsePatch conserves the
+    // L1 norm of AxDens (total FDM mass), but recomputing AxDens = AxRe²+AxIm²
+    // from separately interpolated AxRe/AxIm does NOT conserve mass (Jensen's
+    // inequality: the recomputed integral is always ≥ the original).  This jump
+    // in total FDM mass shifts mass_offset in the Poisson solve, changing φ_grav
+    // everywhere and causing spurious particle kicks.  Renormalize ψ so that the
+    // post-recompute integral matches the FillCoarsePatch integral.
 #ifdef FDM
-    for (MFIter mfi(Ax_new, TilingIfNotGPU()); mfi.isValid(); ++mfi)
     {
-        const Box& bx = mfi.tilebox();
-        auto const& ax = Ax_new.array(mfi);
-        const int re = AxRe, im = AxIm, dens = AxDens, phas = AxPhas;
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        // Save the FillCoarsePatch AxDens integral — this IS mass-conserving.
+        const Real cell_vol = geom.CellSize(0) * geom.CellSize(1) * geom.CellSize(2);
+        const Real mass_fill = Ax_new.sum(AxDens) * cell_vol;
+
+        // Recompute AxDens/AxPhas from AxRe/AxIm.
+        for (MFIter mfi(Ax_new, TilingIfNotGPU()); mfi.isValid(); ++mfi)
         {
-            Real r = ax(i,j,k,re);
-            Real c = ax(i,j,k,im);
-            ax(i,j,k,dens) = r*r + c*c;
-            ax(i,j,k,phas) = std::atan2(c, r);
-        });
+            const Box& bx = mfi.tilebox();
+            auto const& ax = Ax_new.array(mfi);
+            const int re = AxRe, im = AxIm, dens = AxDens, phas = AxPhas;
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                Real r = ax(i,j,k,re);
+                Real c = ax(i,j,k,im);
+                ax(i,j,k,dens) = r*r + c*c;
+                ax(i,j,k,phas) = std::atan2(c, r);
+            });
+        }
+
+        // Renormalize ψ = (AxRe, AxIm) so recomputed mass matches FillCoarsePatch mass.
+        const Real mass_recomputed = Ax_new.sum(AxDens) * cell_vol;
+        if (mass_recomputed > 0.0 && mass_fill > 0.0) {
+            const Real renorm = std::sqrt(mass_fill / mass_recomputed);
+            Ax_new.mult(renorm,          AxRe,   1, 0);
+            Ax_new.mult(renorm,          AxIm,   1, 0);
+            Ax_new.mult(renorm * renorm, AxDens, 1, 0);
+            amrex::Print() << "  init(coarse) level-" << level
+                           << " FDM mass renorm: factor=" << renorm
+                           << "  mass_fill=" << mass_fill
+                           << "  mass_recomputed=" << mass_recomputed << "\n";
+        }
     }
 
-    // Confirm fix worked — also collective
+    // Confirm NaN after recompute+renorm — also collective
     {
         const char* names[] = {"AxDens","AxRe","AxIm","AxPhas"};
         bool any = false;
@@ -1215,14 +1254,19 @@ Nyx::init ()
             bool has_nan = Ax_new.contains_nan(c, 1, 0);  // collective
             if (has_nan) {
                 amrex::Print() << "  init(coarse): NaN PERSISTS in component " << c
-                               << " (" << names[c] << ") after recompute\n";
+                               << " (" << names[c] << ") after recompute+renorm\n";
                 any = true;
             }
         }
         if (!any)
-            amrex::Print() << "  init(coarse): FDM state clean after FillCoarsePatch+recompute\n";
+            amrex::Print() << "  init(coarse): FDM state clean after recompute+renorm\n";
     }
 #endif
+
+    // Copy final renormalized state into old slot.
+    // Must happen AFTER renormalization so that swapTimeLevels() in
+    // advance_axionyx exposes the correct renormalized state.
+    MultiFab::Copy(get_old_data(Axion_Type), Ax_new, 0, 0, Ax_new.nComp(), 0);
 #endif
 
     // We set dt to be large for this new level to avoid screwing up

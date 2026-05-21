@@ -269,7 +269,7 @@ Nyx::advance_particles_only (Real time,
     int use_previous_phi_as_guess = 1;
     if (finest_level_to_advance > level)
     {
-        gravity->multilevel_solve_for_new_phi(level, finest_level_to_advance, 
+        gravity->multilevel_solve_for_new_phi(level, finest_level_to_advance,
                                               use_previous_phi_as_guess);
     }
     else
@@ -278,6 +278,21 @@ Nyx::advance_particles_only (Real time,
         gravity->solve_for_new_phi(level,get_new_data(PhiGrav_Type),
                                gravity->get_grad_phi_curr(level),
                                fill_interior, grav_n_grow);
+    }
+
+    // Diagnostic: phi_new range and NaN check after gravity solve
+    for (int lev = level; lev <= finest_level_to_advance; lev++)
+    {
+        MultiFab& phi_new_diag = parent->getLevel(lev).get_new_data(PhiGrav_Type);
+        const Real phi_new_min = phi_new_diag.min(0, 0);
+        const Real phi_new_max = phi_new_diag.max(0, 0);
+        amrex::Print() << "  solve_for_new_phi level-" << lev
+                       << " phi_new_min=" << phi_new_min
+                       << " phi_new_max=" << phi_new_max;
+        if (phi_new_diag.contains_nan(0, 1, 0))
+            amrex::Abort("solve_for_new_phi: phi_new has NaN at level "
+                         + std::to_string(lev));
+        amrex::Print() << " [OK]\n";
     }
 
     {
@@ -300,6 +315,15 @@ Nyx::advance_particles_only (Real time,
 
             MultiFab grav_vec_new(ba, dm, AMREX_SPACEDIM, grav_n_grow);
             get_level(lev).gravity->get_new_grav_vector(lev, grav_vec_new, cur_time);
+
+            // Diagnostic: grav_vec_new magnitude before moveKick
+            {
+                Real gmax = 0.0;
+                for (int d = 0; d < AMREX_SPACEDIM; d++)
+                    gmax = std::max(gmax, grav_vec_new.norm0(d));
+                amrex::Print() << "  moveKick level-" << lev
+                               << " grav_vec_new_max=" << gmax << "\n";
+            }
 
             for (int i = 0; i < Nyx::theActiveParticles().size(); i++)
                 Nyx::theActiveParticles()[i]->moveKick(grav_vec_new, lev, dt, a_new, a_half);
