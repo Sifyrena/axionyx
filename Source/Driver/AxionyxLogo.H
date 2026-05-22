@@ -18,7 +18,7 @@ inline void print_axionyx_logo() {
 ##--------------------------------- ### ------------- ######
 ############################################################
 )" 
-    << "  Welcome to AxioNyx 1.1.5"
+    << "  Welcome to AxioNyx 1.1.6"
     << "  |  branch: " << AXIONYX_GIT_BRANCH
     << "  |  commit: " << AXIONYX_GIT_HASH
     << "  |  date: "   << AXIONYX_GIT_DATE
