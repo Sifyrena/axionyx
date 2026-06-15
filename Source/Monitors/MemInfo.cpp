@@ -276,11 +276,24 @@ void MemInfo::LogSummary(const char* info) {
     if (logfile_ == NULL) {
       puts("Log file was not opened!");
     } else {
-      float avg_gb = static_cast<float>(avg_pag)/num_ranks_ * psize_in_gb_;
-      float min_gb = static_cast<float>(min_pag) * psize_in_gb_;
-      float max_gb = static_cast<float>(max_pag) * psize_in_gb_;
-      fprintf(logfile_, "%s: Max = %f, Min = %f, Average = %f \n",
-          info, max_gb, min_gb, avg_gb);
+      // NOTE: avail_pages_ is FREE memory (sysconf _SC_AVPHYS_PAGES), i.e. the
+      // historical "Max/Min/Average" columns were *free* GB, not used. We now
+      // report both, fullest node first, because the per-node OOM-killer fires
+      // on the fullest node:  min free  <=>  max used  <=>  tightest headroom.
+      float free_avg = static_cast<float>(avg_pag)/num_ranks_ * psize_in_gb_;
+      float free_min = static_cast<float>(min_pag) * psize_in_gb_;  // fullest node
+      float free_max = static_cast<float>(max_pag) * psize_in_gb_;  // emptiest node
+      float total_gb = static_cast<float>(total_pages_) * psize_in_gb_;
+      fprintf(logfile_,
+          "%s: used GB [max %7.2f  avg %7.2f  min %7.2f]  "
+          "free GB [min %7.2f  max %7.2f]  total %6.2f\n",
+          info,
+          total_gb - free_min,   // max used = fullest node (watch this one)
+          total_gb - free_avg,   // avg used
+          total_gb - free_max,   // min used = emptiest node
+          free_min,              // min free = tightest headroom (OOM-relevant)
+          free_max,              // max free
+          total_gb);
       fflush(logfile_);
     }
   }

@@ -108,7 +108,17 @@ nyx_main (int argc, char* argv[])
 
 #ifdef BL_USE_MPI
     // ---- initialize nyx memory monitoring
+    //      Log path is configurable from inputs, mirroring amr.data_log /
+    //      amr.grid_log:
+    //          amr.mem_log = /path/to/memlog
+    //      If unset, falls back to the historical default ("mem_info.log").
     MemInfo *mInfo = MemInfo::GetInstance();
+    {
+        std::string mem_log_file;
+        ParmParse pp_amr("amr");
+        pp_amr.query("mem_log", mem_log_file);
+        mInfo->Init(mem_log_file);   // empty string -> default filename
+    }
     mInfo->LogSummary("MemInit  ");
 #endif
 
