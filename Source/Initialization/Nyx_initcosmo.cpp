@@ -147,6 +147,15 @@ void Nyx::initcosmo()
     pp.get("FDMinitDirName", FDMmfDirName);
   }
 #endif
+  bool separate_baryon_ic = false;
+  std::string baryonMfDirName;
+  pp.query("separate_baryon_ic", separate_baryon_ic);
+  if (separate_baryon_ic)
+  {
+    if (ParallelDescriptor::IOProcessor())
+      std::cout << "Using a separate initial-conditions box for baryons" << std::endl;
+    pp.get("baryonInitDirName", baryonMfDirName);
+  }
 #ifdef NUFLUID
   std::string nuMfDirName;
   pp.get("nuInitDirName", nuMfDirName);
@@ -232,6 +241,9 @@ void Nyx::initcosmo()
   if (mixed_cosmology)
     icReadAndPrepareFab(FDMmfDirName, 0, FDMmf);
 #endif
+  MultiFab baryonMf;
+  if (separate_baryon_ic)
+    icReadAndPrepareFab(baryonMfDirName, 0, baryonMf);
 #ifdef NUFLUID
   MultiFab nuMf;
   icReadAndPrepareFab(nuMfDirName, 0, nuMf);
@@ -510,9 +522,14 @@ void Nyx::initcosmo()
       FillCoarsePatch(D_new, 0, 0, DiagEOS_Type, 0, D_new.nComp());
     }
 
+    // Baryon density/velocity come from their own IC box if one was given
+    // (e.g. generated from a baryon-specific transfer function), otherwise
+    // we fall back to the same box used for the CDM particles, as before.
+    MultiFab &baryonSrc = separate_baryon_ic ? baryonMf : mf;
+
     // copy density
     S_new.setVal(0.);
-    S_new.MultiFab::ParallelCopy(mf, baryon_den, Density_comp, 1, 0, 0);
+    S_new.MultiFab::ParallelCopy(baryonSrc, baryon_den, Density_comp, 1, 0, 0);
     S_new.plus(1, Density_comp, 1, S_new.nGrow());
     S_new.mult(rhoB, Density_comp, 1, S_new.nGrow());
 
@@ -523,7 +540,7 @@ void Nyx::initcosmo()
     //      S_new.copy(*particle_mf[0], 0, Density_comp, 1);
 
     // copy velocities...
-    S_new.MultiFab::ParallelCopy(mf, baryon_vx, Xmom_comp, 3, 0, 0);
+    S_new.MultiFab::ParallelCopy(baryonSrc, baryon_vx, Xmom_comp, 3, 0, 0);
 
     //...and "transform" to momentum
     S_new.mult(vel_fac[0], Xmom_comp, 1, S_new.nGrow());
@@ -533,7 +550,13 @@ void Nyx::initcosmo()
     S_new.mult(vel_fac[2], Zmom_comp, 1, S_new.nGrow());
     MultiFab::Multiply(S_new, S_new, Density_comp, Zmom_comp, 1, S_new.nGrow());
 
+    // Mean IGM temperature at the IC redshift. Defaults to the standard
+    // post-recombination adiabatic scaling, but can be overridden directly
+    // (in K) via nyx.ic_temp for a different thermal history.
     Real tempInit = 0.021 * (1.0 + redshift) * (1.0 + redshift);
+    pp2.query("ic_temp", tempInit);
+    if (ParallelDescriptor::IOProcessor())
+      std::cout << "Mean IGM temperature at IC is " << tempInit << " K." << std::endl;
 
     D_new.setVal(tempInit, Temp_comp);
     D_new.setVal(0.0, Ne_comp);
