@@ -558,10 +558,16 @@ void Nyx::initcosmo()
     if (ParallelDescriptor::IOProcessor())
       std::cout << "Mean IGM temperature at IC is " << tempInit << " K." << std::endl;
 
-    D_new.setVal(tempInit, Temp_comp);
-    D_new.setVal(0.0, Ne_comp);
+    // NB: setVal(val, comp) is NOT "set this one component" -- FabArray has
+    // no such overload. The 2-arg form that exists is setVal(val, nghost),
+    // which sets ALL components. Each call below was clobbering every
+    // DiagEOS component set by the previous one; the last call always won,
+    // so Temp_comp ended up 0.0 (from the Ne_comp line) instead of tempInit.
+    // The 3-arg form (val, comp, ncomp) is the real per-component fill.
+    D_new.setVal(tempInit, Temp_comp, 1);
+    D_new.setVal(0.0, Ne_comp, 1);
     if (inhomo_reion > 0)
-      D_new.setVal(0.0, Zhi_comp);
+      D_new.setVal(0.0, Zhi_comp, 1);
 
     init_e_from_T(old_a);
 

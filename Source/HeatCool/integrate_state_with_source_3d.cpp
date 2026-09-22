@@ -549,7 +549,8 @@ int Nyx::integrate_state_struct_mfin
             cvode_mem = CVodeCreate(CV_BDF, *amrex::sundials::The_Sundials_Context());
             flag = CVodeInit(cvode_mem, f, t, u);
 
-            N_VScale(abstol,u,abstol_vec);
+            N_VAbs(u,abstol_vec);           // tolerance must be positive regardless of the sign of u
+            N_VScale(abstol,abstol_vec,abstol_vec);
             //                              N_VConst(N_VMin(abstol_vec),abstol_vec);
             amrex::Print()<<"TOLERANCE IS "<<abstol_vec[0] <<"\n";
             flag = CVodeSVtolerances(cvode_mem, reltol, abstol_vec);

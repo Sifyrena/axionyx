@@ -72,6 +72,12 @@ AMREX_FORCE_INLINE AMREX_GPU_HOST_DEVICE void ion_n_device(AtomicRates* atomic_r
     //    t = U / e_to_cgs * (gamma_minus_1 * mp_over_kb * mu);
     t  = gamma_minus_1*MPROTON/BOLTZMANN * U * mu;
 
+    // The implicit solver can try a negative trial U mid-iteration (legal now
+    // that abstol tracks |U|); log10 of a non-positive t is NaN, which then
+    // produces a garbage table index below. Clamp t itself (not just logT)
+    // to the table floor, since t is also returned by reference to the
+    // caller as T_vode and reused there (see f_rhs_rpar in f_rhs.H).
+    if (t <= 0.0) t = std::pow(10.0, TCOOLMIN);
     logT = std::log10(t);
 
     if (logT >= TCOOLMAX) // Fully ionized plasma
